@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pts2-sdk"
+version = "0.1.0"
+description = "Python SDK for Technotrade PTS-2 Forecourt Controller using jsonPTS."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "GasNova" }
+]
+dependencies = [
+  "requests>=2.31",
+  "python-dotenv>=1.0",
+  "pydantic>=2.0",
+  "pydantic-settings>=2.0",
+  "urllib3>=1.26",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "httpx>=0.27"]
+pandas = ["pandas>=2.0"]
+websocket = ["websocket-client>=1.7"]
+all = ["pytest>=7.0", "httpx>=0.27", "pandas>=2.0", "websocket-client>=1.7"]
+
+[tool.setuptools.packages.find]
+include = ["pts2_sdk*", "pts2_api*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

@@ -1,0 +1,15 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+logs/
+reports/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+node_modules/
+.next/
+.vite/
+coverage/

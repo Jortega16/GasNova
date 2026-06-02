@@ -1,0 +1,13 @@
+requests
+python-dotenv
+pydantic
+pydantic-settings
+urllib3
+fastapi
+uvicorn[standard]
+pytest
+httpx
+
+# Optional extras:
+# pandas
+# websocket-client
