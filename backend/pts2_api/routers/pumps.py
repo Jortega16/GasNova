@@ -9,7 +9,10 @@ from fastapi import APIRouter, Depends, Path
 from pts2_sdk import PTS2Client
 
 from ..dependencies import get_pts2_client
-from ..schemas import AuthorizeRequest, CommandResponse, SetPricesRequest
+from sqlalchemy.orm import Session
+from ..database import get_db
+from ..models import PumpTransaction, Shift
+from ..schemas import AuthorizeRequest, CommandResponse, SetPricesRequest, PostpayAuthorizeRequest, TransactionCreate
 
 router = APIRouter(prefix="/pumps", tags=["pumps"])
 
@@ -280,3 +283,76 @@ def unlock(
         return CommandResponse(data=client.pumps.unlock(pump_id))
     finally:
         _close(client)
+
+
+@router.post(
+    "/{pump_id}/postpay-authorize",
+    response_model=CommandResponse,
+    summary="Autorizar bomba en modo postpago",
+    description="Autoriza la bomba especificada sin preset (carga libre) para la modalidad de postpago.",
+)
+def postpay_authorize(
+    request: PostpayAuthorizeRequest,
+    pump_id: int = Path(ge=1, description="ID del surtidor a autorizar."),
+    client: PTS2Client = Depends(get_pts2_client),
+) -> CommandResponse:
+    """Envía una solicitud de autorización libre (sin límite) al surtidor."""
+    try:
+        data = client.pumps.authorize_free(pump_id, nozzle=request.nozzle)
+        return CommandResponse(data={"status": "Authorized", "mode": "Postpay", "detail": data})
+    finally:
+        _close(client)
+
+
+@router.post(
+    "/{pump_id}/start-dispensing",
+    response_model=CommandResponse,
+    summary="Iniciar despacho (Surtir)",
+    description="Endpoint lógico que simula el inicio físico del despacho de combustible en la bomba (levantamiento de pistola).",
+)
+def start_dispensing(
+    pump_id: int = Path(ge=1, description="ID del surtidor para iniciar el despacho."),
+    client: PTS2Client = Depends(get_pts2_client),
+) -> CommandResponse:
+    """Simula el evento de levantamiento de pistola y comienzo del flujo de combustible."""
+    try:
+        return CommandResponse(data={"message": "Nozzle lift event simulated successfully", "pump_id": pump_id})
+    finally:
+        _close(client)
+
+
+@router.post(
+    "/{pump_id}/transactions",
+    response_model=CommandResponse,
+    summary="Registrar transacción de venta",
+    description="Registra de forma persistente la transacción cobrada en la base de datos PostgreSQL de la estación.",
+)
+def create_transaction(
+    request: TransactionCreate,
+    pump_id: int = Path(ge=1, description="ID del surtidor donde se realizó la venta."),
+    db: Session = Depends(get_db),
+) -> CommandResponse:
+    """Registra y almacena la transacción en la base de datos local."""
+    unit_price = request.unit_price
+    if unit_price is None and request.volume > 0:
+        unit_price = request.amount / request.volume
+
+    # Find current active shift
+    active_shift = db.query(Shift).filter(Shift.status == "Active").first()
+    active_shift_id = active_shift.shift_id if active_shift else None
+
+    tx = PumpTransaction(
+        pump_id=pump_id,
+        transaction_id=request.transaction_id,
+        nozzle=request.nozzle,
+        volume=request.volume,
+        amount=request.amount,
+        unit_price=unit_price,
+        status=f"{request.status} ({request.payment_type})",
+        shift_id=active_shift_id,
+        payment_type=request.payment_type
+    )
+    db.add(tx)
+    db.commit()
+    db.refresh(tx)
+    return CommandResponse(data={"id": tx.id, "transaction_id": tx.transaction_id, "pump_id": tx.pump_id, "status": tx.status})

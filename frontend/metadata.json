@@ -1,0 +1,6 @@
+{
+  "name": "GasNova",
+  "description": "Sistema de gestión y control de operaciones de estación de combustible GasNova, control de bombas, reporte de turno, configuración de precios y estado de inventario de tanques.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

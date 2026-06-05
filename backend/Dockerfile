@@ -5,7 +5,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY pyproject.toml README.md requirements.txt ./
+COPY pyproject.toml requirements.txt ./
 COPY pts2_sdk ./pts2_sdk
 COPY pts2_api ./pts2_api
 COPY examples ./examples

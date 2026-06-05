@@ -7,7 +7,10 @@ from fastapi import APIRouter, Depends, Path, Query
 from pts2_sdk import PTS2Client
 
 from ..dependencies import get_pts2_client
-from ..schemas import CommandResponse
+from sqlalchemy.orm import Session
+from ..database import get_db
+from ..models import InTankDelivery
+from ..schemas import CommandResponse, DeliveryCreate
 
 router = APIRouter(tags=["tanks"])
 
@@ -76,3 +79,36 @@ def tank_volume_for_height(
         return CommandResponse(data=client.tanks.get_tank_volume_for_height(tank_id, height))
     finally:
         client.close()
+
+
+@router.post(
+    "/tanks/{tank_id}/deliveries",
+    response_model=CommandResponse,
+    summary="Registrar recepción de combustible",
+    description="Registra la descarga de cisterna para un tanque en la base de datos PostgreSQL.",
+)
+def create_delivery(
+    request: DeliveryCreate,
+    tank_id: int = Path(ge=1, description="ID del tanque receptor."),
+    db: Session = Depends(get_db),
+) -> CommandResponse:
+    """Registra y almacena el ingreso de combustible en la base de datos local."""
+    import datetime
+    delivery = InTankDelivery(
+        tank_id=tank_id,
+        delivery_date=datetime.datetime.now(),
+        volume=request.volume,
+        product_code=request.product_code,
+        driver_name=request.driver_name,
+        truck_number=request.truck_number,
+        notes=request.notes,
+    )
+    db.add(delivery)
+    db.commit()
+    db.refresh(delivery)
+    return CommandResponse(data={
+        "id": delivery.id,
+        "tank_id": delivery.tank_id,
+        "volume": delivery.volume,
+        "delivery_date": delivery.delivery_date.isoformat(),
+    })

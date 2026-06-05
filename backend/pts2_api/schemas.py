@@ -79,3 +79,81 @@ class ErrorResponse(ApiModel):
     ok: bool = False
     error: str
     type: str
+
+
+class PostpayAuthorizeRequest(ApiModel):
+    nozzle: int = Field(ge=1, description="Número de boquilla del surtidor para autorizar en modo postpago.")
+
+
+class UserCreate(ApiModel):
+    username: str
+    name: str
+    role: str
+    avatar: str | None = None
+    pin: str
+    status: str = "Active"
+
+
+class UserResponse(ApiModel):
+    id: str
+    username: str
+    name: str
+    role: str
+    avatar: str | None = None
+    status: str
+
+
+class LoginRequest(ApiModel):
+    username: str
+    pin: str
+
+
+class ShiftCreate(ApiModel):
+    shift_id: str
+    operator_name: str
+    start_time: str | None = None
+    end_time: str | None = None
+    status: str = "Active"
+
+
+class ShiftResponse(ApiModel):
+    id: int
+    shift_id: str
+    operator_name: str
+    start_time: str | None = None
+    end_time: str | None = None
+    status: str
+
+
+class TransactionCreate(ApiModel):
+    transaction_id: int
+    nozzle: int | None = None
+    volume: float
+    amount: float
+    unit_price: float | None = None
+    payment_type: str = "Cash"
+    status: str = "Completed"
+
+
+class DeliveryCreate(ApiModel):
+    volume: float
+    product_code: str | None = None
+    driver_name: str | None = None
+    truck_number: str | None = None
+    notes: str | None = None
+
+
+class ScheduledPriceCreate(ApiModel):
+    id: str = Field(description="Identificador único de la programación (ej. SP-001).")
+    date_time: str = Field(description="Fecha y hora de ejecución (formato: YYYY-MM-DD HH:MM).")
+    fuel_type: str = Field(description="Tipo de combustible a actualizar.")
+    new_price: float = Field(gt=0, description="Nuevo precio por galón.")
+
+
+class ScheduledPriceResponse(ApiModel):
+    id: str
+    date_time: str
+    fuel_type: str
+    new_price: float
+    status: str
+
