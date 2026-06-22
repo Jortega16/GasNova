@@ -3,7 +3,21 @@
  * Automatically falls back to mock logic if the backend is unreachable.
  */
 
-const API_BASE_URL = (import.meta as any).env.VITE_API_BASE_URL || 'http://localhost:8000';
+const getApiBaseUrl = () => {
+  const envUrl = (import.meta as any).env.VITE_API_BASE_URL;
+  if (envUrl) {
+    if (typeof window !== 'undefined' && envUrl.includes('localhost')) {
+      return envUrl.replace('localhost', window.location.hostname);
+    }
+    return envUrl;
+  }
+  if (typeof window !== 'undefined') {
+    return `http://${window.location.hostname}:8002`;
+  }
+  return 'http://localhost:8002';
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 export interface BackendPumpStatus {
   pump?: number;
@@ -31,6 +45,27 @@ export interface BackendTankMeasurement {
   measurement_time?: string;
 }
 
+export interface BackendPumpStatusItem {
+  pump: number;
+  status_type: string; // PumpIdleStatus | PumpFillingStatus | PumpEndOfTransactionStatus | PumpOfflineStatus | PumpAuthorizedStatus
+  nozzle?: number;
+  fuel_grade_id?: number;
+  fuel_grade_name?: string;
+  volume?: number;
+  amount?: number;
+  price?: number;
+  transaction?: number;
+  nozzle_prices?: number[];
+  last_volume?: number;
+  last_amount?: number;
+  last_transaction?: number;
+  error?: string;
+}
+
+export interface BackendPumpsStatusAll {
+  pumps: BackendPumpStatusItem[];
+}
+
 // Helper to handle fetch and network exceptions gracefully
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<{ ok: boolean; data?: T; error?: string }> {
   try {
@@ -49,7 +84,8 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<{ ok: b
     }
 
     const json = await res.json();
-    return { ok: true, data: json.data as T };
+    const data = (json && typeof json === 'object' && 'data' in json) ? json.data : json;
+    return { ok: true, data: data as T };
   } catch (error: any) {
     console.warn(`[GasNova API] Connection to ${path} failed:`, error.message || error);
     return { ok: false, error: error.message || 'Network error' };
@@ -66,12 +102,36 @@ export const api = {
   },
 
   /**
+   * Check connection status for both API and PTS-2 controller.
+   */
+  async checkPts2Health(): Promise<{ apiConnected: boolean; pts2Connected: boolean }> {
+    const res = await apiFetch<{ ok: boolean; pts2?: { ok: boolean } }>('health');
+    if (res.ok && res.data) {
+      return {
+        apiConnected: !!res.data.ok,
+        pts2Connected: !!(res.data.pts2 && res.data.pts2.ok)
+      };
+    }
+    return { apiConnected: false, pts2Connected: false };
+  },
+
+  /**
    * Get status of a specific pump.
    */
   async getPumpStatus(pumpId: number): Promise<{ ok: boolean; status?: BackendPumpStatus; error?: string }> {
     const res = await apiFetch<BackendPumpStatus>(`pumps/${pumpId}/status`);
     return { ok: res.ok, status: res.data, error: res.error };
   },
+
+  /**
+   * Get real-time status of ALL pumps from the PTS-2 controller in a single request.
+   * Used for dashboard polling every 2 seconds.
+   */
+  async getAllPumpsStatus(pumpCount: number = 8): Promise<{ ok: boolean; pumps?: BackendPumpStatusItem[]; error?: string }> {
+    const res = await apiFetch<BackendPumpsStatusAll>(`pumps/status-all?pump_count=${pumpCount}`);
+    return { ok: res.ok, pumps: res.data?.pumps, error: res.error };
+  },
+
 
   /**
    * Send pre-authorization to a pump nozzle.
@@ -243,6 +303,22 @@ export const api = {
         notes,
       }),
     });
+  },
+
+  /**
+   * Get custom pump configurations from the database.
+   */
+  async getPumpsConfiguration(): Promise<{ ok: boolean; data?: any[]; error?: string }> {
+    const res = await apiFetch<any[]>('pumps/configuration');
+    return { ok: res.ok, data: res.data, error: res.error };
+  },
+
+  /**
+   * Get custom tank configurations from the database.
+   */
+  async getTanksConfiguration(): Promise<{ ok: boolean; data?: any[]; error?: string }> {
+    const res = await apiFetch<any[]>('tanks/db-configuration');
+    return { ok: res.ok, data: res.data, error: res.error };
   },
 
   /**
@@ -436,6 +512,46 @@ export const api = {
    */
   async getPrinterStatus(): Promise<{ ok: boolean; data?: any; error?: string }> {
     return apiFetch<any>('print/status');
+  },
+
+  /**
+   * Get all pending transient transactions.
+   */
+  async getPendingTransactions(): Promise<{ ok: boolean; data?: any[]; error?: string }> {
+    const res = await apiFetch<any[]>('pumps/pending-transactions');
+    return { ok: res.ok, data: res.data, error: res.error };
+  },
+
+  /**
+   * Save a pending transient transaction.
+   */
+  async savePendingTransaction(
+    pumpId: number,
+    trxId: string,
+    nozzle: number,
+    volume: number,
+    amount: number,
+    fuelType: string
+  ): Promise<{ ok: boolean; data?: any; error?: string }> {
+    return apiFetch<any>(`pumps/${pumpId}/pending-transactions`, {
+      method: 'POST',
+      body: JSON.stringify({
+        trx_id: trxId,
+        nozzle,
+        volume,
+        amount,
+        fuel_type: fuelType,
+      }),
+    });
+  },
+
+  /**
+   * Delete a pending transient transaction.
+   */
+  async deletePendingTransaction(pumpId: number, trxId: string): Promise<{ ok: boolean; data?: any; error?: string }> {
+    return apiFetch<any>(`pumps/${pumpId}/pending-transactions/${trxId}`, {
+      method: 'DELETE',
+    });
   },
 };
 

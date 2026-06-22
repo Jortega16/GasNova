@@ -112,7 +112,7 @@ def test_pump_authorize_amount_uses_type_and_dose():
     }
 
 
-def test_pump_authorize_free_has_no_type_or_dose():
+def test_pump_authorize_free_defaults_to_full_tank():
     client = make_client(
         [
             {
@@ -124,7 +124,7 @@ def test_pump_authorize_free_has_no_type_or_dose():
 
     client.pumps.authorize_free(1, nozzle=1)
 
-    assert client.transport.requests[0]["Packets"][0]["Data"] == {"Pump": 1, "Nozzle": 1}
+    assert client.transport.requests[0]["Packets"][0]["Data"] == {"Pump": 1, "Nozzle": 1, "Type": "FullTank"}
 
 
 def test_authorize_rejects_volume_and_amount_together():

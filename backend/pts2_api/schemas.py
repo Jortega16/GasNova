@@ -157,3 +157,47 @@ class ScheduledPriceResponse(ApiModel):
     new_price: float
     status: str
 
+
+class PumpAuthorizeBody(ApiModel):
+    pump: int = Field(ge=1, description="ID del surtidor a autorizar.")
+    nozzle: int | None = Field(default=None, ge=1)
+    type: str = Field(default="FullTank", description="FullTank, Volume, Amount")
+    dose: float | None = Field(default=None, gt=0)
+    price: float | None = Field(default=None, gt=0)
+    tag: str | None = None
+
+
+class PumpActionBody(ApiModel):
+    pump: int = Field(ge=1, description="ID del surtidor.")
+
+
+class PumpStatusItem(ApiModel):
+    """Estado real de una bomba devuelto por el PTS-2."""
+    pump: int = Field(description="ID del surtidor.")
+    status_type: str = Field(description="Tipo de estado jsonPTS (PumpIdleStatus, PumpFillingStatus, etc.).")
+    nozzle: int | None = Field(default=None, description="Boquilla activa.")
+    fuel_grade_id: int | None = Field(default=None, description="ID del grado de combustible.")
+    fuel_grade_name: str | None = Field(default=None, description="Nombre del grado de combustible.")
+    volume: float | None = Field(default=None, description="Volumen despachado en la transacción activa.")
+    amount: float | None = Field(default=None, description="Monto despachado en la transacción activa.")
+    price: float | None = Field(default=None, description="Precio por unidad del combustible activo.")
+    transaction: int | None = Field(default=None, description="ID de la transacción activa en el PTS-2.")
+    nozzle_prices: list[float] | None = Field(default=None, description="Lista de precios por boquilla.")
+    last_volume: float | None = Field(default=None, description="Volumen de la última transacción.")
+    last_amount: float | None = Field(default=None, description="Monto de la última transacción.")
+    last_transaction: int | None = Field(default=None, description="ID de la última transacción.")
+    error: str | None = Field(default=None, description="Error al consultar esta bomba (si aplica).")
+
+
+class PumpsStatusAllResponse(ApiModel):
+    """Respuesta del endpoint /pumps/status-all."""
+    pumps: list[PumpStatusItem]
+
+
+class PendingTransactionCreate(ApiModel):
+    trx_id: str
+    nozzle: int
+    volume: float
+    amount: float
+    fuel_type: str
+

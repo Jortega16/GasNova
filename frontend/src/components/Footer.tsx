@@ -13,6 +13,8 @@ interface FooterProps {
   setIsSimulating: (sim: boolean) => void;
   onManualSync: () => void;
   pendingAutoConsolidationInfo?: { shortestTrxId: string; secLeft: number; totalPending: number } | null;
+  isApiOnline?: boolean;
+  isPts2Online?: boolean;
 }
 
 export default function Footer({ 
@@ -21,7 +23,9 @@ export default function Footer({
   isSimulating, 
   setIsSimulating, 
   onManualSync,
-  pendingAutoConsolidationInfo
+  pendingAutoConsolidationInfo,
+  isApiOnline = false,
+  isPts2Online = false
 }: FooterProps) {
   const [lastSyncTime, setLastSyncTime] = useState<string>('10:31 AM');
   const [syncing, setSyncing] = useState<boolean>(false);
@@ -54,10 +58,33 @@ export default function Footer({
       
       {/* Left side: System status */}
       <div className="flex items-center gap-4">
+        {/* Red / API Status */}
         <div className="flex items-center gap-1.5" id="network-status">
-          <Wifi className="w-4 h-4 text-[#2E7D32] animate-pulse" />
-          <span>Red: </span>
-          <span className="text-[#2E7D32] font-semibold font-sans">CONECTADO</span>
+          <Wifi className={`w-4 h-4 animate-pulse ${isApiOnline ? 'text-[#2E7D32]' : 'text-[#c62828]'}`} />
+          <span>Red API: </span>
+          <span className={`font-semibold font-sans ${isApiOnline ? 'text-[#2E7D32]' : 'text-[#c62828]'}`}>
+            {isApiOnline ? 'CONECTADO' : 'DESCONECTADO'}
+          </span>
+        </div>
+
+        <div className="h-4 w-px bg-[#44474e]" />
+
+        {/* PTS-2 Status */}
+        <div className="flex items-center gap-1.5" id="pts2-status">
+          <span className={`relative flex h-2 w-2 shrink-0`}>
+            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+              isSimulating ? 'bg-amber-400' : isPts2Online ? 'bg-green-400' : 'bg-red-400'
+            }`}></span>
+            <span className={`relative inline-flex rounded-full h-2 w-2 ${
+              isSimulating ? 'bg-amber-500' : isPts2Online ? 'bg-green-500' : 'bg-red-500'
+            }`}></span>
+          </span>
+          <span>PTS-2: </span>
+          <span className={`font-semibold font-sans ${
+            isSimulating ? 'text-amber-400' : isPts2Online ? 'text-[#2E7D32]' : 'text-[#c62828]'
+          }`}>
+            {isSimulating ? 'SIMULADOR' : isPts2Online ? 'ONLINE' : 'OFFLINE'}
+          </span>
         </div>
 
         {pendingAutoConsolidationInfo && (

@@ -1,0 +1,188 @@
+<!-- Breadcrumbs-->
+<ol class="breadcrumb">
+    <li class="active">
+        <i class="fas fa-chart-line"></i>
+        <span class="rpReportingLabel"></span>
+    </li>
+</ol>
+
+<div class="clearfix"></div>
+
+<ul class="nav nav-tabs nav-justified" id="rpTab" role="tablist">
+    <li class="nav-item">
+        <a class="nav-link active" id="rpPumpsTab" data-page="PumpsReportingPage" href="#">
+            <i class="fas fa-gas-pump"></i> 
+            <span class="rpPumpsLabel"></span>
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" id="rpTanksTab" data-page="TanksReportingPage" href="#">
+            <i class="fas fa-database"></i> 
+            <span class="rpTanksLabel"></span>
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link" id="rpGpsTab" data-page="GpsReportingPage" href="#">
+            <i class="fas fa-map-marker-alt"></i>
+            <span class="rpGpsLabel"></span>
+        </a>
+    </li>
+</ul>
+
+<div id="rpDeviceNumberDiv" class="col-sm-8 offset-sm-2 input-group pt-2 mb-1">
+    <div class="input-group-prepend">
+        <label id="rpDeviceNumberLabel" class="input-group-text font-weight-bold" for="rpDeviceNumberSelect"></label>
+    </div>
+    <select id="rpDeviceNumberSelect" class="custom-select form-control"></select>
+</div>
+
+<div id="rpDateTimeStartDiv" class="col-sm-8 offset-sm-2 input-group pt-2 mb-1">
+    <div class="input-group-prepend">
+        <label class="input-group-text rpDateTimeStartLabel font-weight-bold" for="rpDateTimeStartInput"></label>
+    </div>
+    <input id="rpDateTimeStartInput" type="text" class="form-control" value="00.00.00 00:00:00">
+</div>
+
+<div id="rpDateTimeEndDiv" class="col-sm-8 offset-sm-2 input-group mb-1">
+    <div class="input-group-prepend">
+        <label class="input-group-text rpDateTimeEndLabel font-weight-bold" for="rpDateTimeEndInput"></label>
+    </div>
+    <input id="rpDateTimeEndInput" type="text" class="form-control" value="00.00.00 00:00:00">
+</div>
+
+<div id="rpFuelGradesList" class="d-none col-sm-8 offset-sm-2 input-group pt-2 mb-1">
+    <div class="input-group-prepend">
+        <label class="input-group-text rpFuelGradeLabel font-weight-bold" for="rpFuelGradeSelect"></label>
+    </div>
+    <select id="rpFuelGradeSelect" class="custom-select form-control"></select>
+</div>
+
+<div id="rpUsersList" class="d-none col-sm-8 offset-sm-2 input-group pt-2 mb-1">
+    <div class="input-group-prepend">
+        <label class="input-group-text rpUserLabel font-weight-bold" for="rpUserSelect"></label>
+    </div>
+    <select id="rpUserSelect" class="custom-select form-control"></select>
+</div>
+
+<div id="rpTagsList" class="d-none col-sm-8 offset-sm-2 input-group pt-2 mb-1">
+    <div class="input-group-prepend">
+        <label class="input-group-text rpTagLabel font-weight-bold" for="rpTagSelect"></label>
+    </div>
+    <select id="rpTagSelect" class="custom-select form-control"></select>
+</div>
+
+<div id="rpTankDirection" class="d-none col-sm-8 offset-sm-2 input-group pt-2 mb-1">
+    <div class="input-group-prepend">
+        <label id="rpTankDirectionLabel" class="input-group-text rpDirectionLabel font-weight-bold" for="rpTankDirectionSelect"></label>
+    </div>
+    <select id="rpTankDirectionSelect" class="custom-select form-control"></select>
+</div>
+
+<div class="tab-content tabContent pb-2" id="rpTabContent"></div>
+
+<script>
+    
+    // Localization
+    $(".rpReportingLabel").text(localizeString("TAB_REPORTING"));
+    $(".rpPumpsLabel").text(localizeString("TAB_PUMPS"));
+    $(".rpTanksLabel").text(localizeString("TAB_TANKS"));
+    $(".rpPumpsAndTanksLabel").text(localizeString("PUMPS_AND_TANKS_RECONCILIATION"));
+    $(".rpGpsLabel").text(localizeString("GPS"));
+    $(".rpReportFilesLabel").text(localizeString("REPORT_FILES"));
+    $("#rpDeviceNumberLabel").text(localizeString("DEVICE_NUMBER"));    
+    $(".rpDateTimeStartLabel").text(localizeString("DATE_TIME_START"));
+    $(".rpDateTimeEndLabel").text(localizeString("DATE_TIME_END"));
+    $(".rpFuelGradeLabel").text(localizeString("FUEL_GRADE"));
+    $(".rpUserLabel").text(localizeString("USER_SHORT"));
+    $(".rpTagLabel").text(localizeString("TAG"));
+    $(".rpDirectionLabel").text(localizeString("DIRECTION"));
+    $("#rpTankDirectionSelect").empty();
+    $("#rpTankDirectionSelect").append("<option value='0'>" + localizeString("ALL") + "</option>");
+    $("#rpTankDirectionSelect").append("<option value='1'>" + localizeString("INCREASE") + "</option>");
+    $("#rpTankDirectionSelect").append("<option value='2'>" + localizeString("DECREASE") + "</option>");
+    $("#rpTankDirectionSelect").val("0");
+    $(".rpGenerateTankReconciliationReportLabel").text(localizeString("GENERATE_TANK_RECONCILIATION_REPORT"));
+
+    // Fill tab content
+    $("#rpTabContent").empty();
+    $("#rpTabContent").load("pagesPartial/PumpsReportingPage.html");
+    
+    // Clean arrays
+    commands = [];
+
+    // Send request
+    commands.push({
+        function: GetDateTime
+    });
+    request = createComplexRequest(commands);
+
+    request.done(function(response) {
+        if (responseNull == true)
+            return;
+
+        // Response data
+        data = response.Packets.filter(Packet => Packet.Type == "DateTime");
+        if (data != null &&
+            data != undefined &&
+            data.length > 0) {
+            data = data[0].Data;
+            if (data != undefined) {
+
+                var currentDate = new Date(data.DateTime);
+                var previousDate = new Date(data.DateTime);
+                previousDate.setDate(previousDate.getDate() - 1);
+
+                // Select system date/time
+                $('#rpDateTimeStartInput').datetimepicker({
+                    format:'d.m.y H:i:s',
+                    formatDate: 'd.m.y',
+                    formatTime: 'H:i:s',
+                    step: 1
+                });
+
+                // Select system date/time
+                $('#rpDateTimeEndInput').datetimepicker({
+                    format:'d.m.y H:i:s',
+                    formatDate: 'd.m.y',
+                    formatTime: 'H:i:s',
+                    step: 1
+                });
+
+                var year = addZero(previousDate.getFullYear() % 100);
+                var month = addZero(previousDate.getMonth() + 1);
+                var date = addZero(previousDate.getDate());
+                var hours = addZero(previousDate.getHours());
+                var minutes = addZero(previousDate.getMinutes());
+                var seconds = addZero(previousDate.getSeconds());
+                
+                $('#rpDateTimeStartInput').val(date + "." + month + "." + year + " " + hours + ":" + minutes + ":" + seconds);    
+
+                year = addZero(currentDate.getFullYear() % 100);
+                month = addZero(currentDate.getMonth() + 1);
+                date = addZero(currentDate.getDate());
+                hours = addZero(currentDate.getHours());
+                minutes = addZero(currentDate.getMinutes());
+                seconds = addZero(currentDate.getSeconds());
+
+                $('#rpDateTimeEndInput').val(date + "." + month + "." + year + " " + hours + ":" + minutes + ":" + seconds);
+                
+                function addZero(i) {
+                    if (i.toString().length == 1) {
+                        i = "0" + i.toString();
+                    }
+                    return i;
+                }
+            }
+        }
+    });
+
+    $('#rpTab a').on('click', function (e) {
+        e.preventDefault();
+
+        $(this).tab('show');
+
+        // Fill tab content
+        $("#rpTabContent").empty();
+        $("#rpTabContent").load("pagesPartial/" + this.getAttribute("data-page") + ".html");
+    });
+</script>

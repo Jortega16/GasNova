@@ -17,7 +17,8 @@ interface InventoryTabProps {
 const fuelTypeTranslations: { [key: string]: string } = {
   'Regular Unleaded': 'Gasolina Regular',
   'Premium Unleaded': 'Gasolina Premium',
-  'Diesel': 'Diesel'
+  'Diesel': 'Diesel',
+  'LPG': 'LPG'
 };
 
 export default function InventoryTab({ tanks, onRefillTank, onAddTank, setTanks }: InventoryTabProps) {
@@ -80,13 +81,21 @@ export default function InventoryTab({ tanks, onRefillTank, onAddTank, setTanks 
           waveBg: 'bg-amber-500/20'
         };
       case 'Diesel':
-      default:
         return {
           bg: 'bg-emerald-600',
           gradient: 'from-emerald-700 to-emerald-400',
           textColor: 'text-emerald-400',
           borderColor: 'border-emerald-500',
           waveBg: 'bg-emerald-500/20'
+        };
+      case 'LPG':
+      default:
+        return {
+          bg: 'bg-indigo-600',
+          gradient: 'from-indigo-700 to-indigo-400',
+          textColor: 'text-indigo-400',
+          borderColor: 'border-indigo-500',
+          waveBg: 'bg-indigo-500/20'
         };
     }
   };

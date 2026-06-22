@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+
+    <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+		<meta name="description" content="PTS-2 controller web-server">
+        <meta name="author" content="Technotrade LLC">
+        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+        <meta http-equiv='cache-control' content='no-cache'>
+        <meta http-equiv='expires' content='0'>
+        <meta http-equiv='pragma' content='no-cache'>
+        <link href="img/favicon.ico" rel="shortcut icon" />
+		<title>
+            PTS-2 controller web-server
+        </title>
+
+        <!-- build:css -->
+        <!-- Bootstrap core CSS-->
+        <link href="css/bootstrap.css" rel="stylesheet">
+        <!-- Datatables.net-->
+        <link href="css/datatables.min.css" rel="stylesheet" type="text/css">
+        <!-- Styles for jQuery datetimepicker-->
+        <link href="css/jquery.datetimepicker.min.css" rel="stylesheet" type="text/css">
+        <!-- Custom styles for this template-->
+        <link href="css/website.css" rel="stylesheet">
+        <!-- endbuild -->
+
+    </head>
+
+    <body class="fixed-nav sticky-footer bg-dark" id="page-top">
+        <!-- Navigation-->
+        <nav class="navbar navbar-expand-md navbar-dark bg-dark fixed-top pb-0" id="mainNav">
+            <a class="navbar-brand" href="index.html">
+                <span class="mpControllerLogo font-weight-bold p-0"></span>
+                <span class="mpControllerLogoName"></span>
+            </a>
+            <ul class="navbar-nav ml-auto d-block d-md-none">
+                <li class="nav-item userInfo text-white mr-3">
+                    <span class="usernameSpanLg font-weight-bold"></span>
+                    <span><u><i><a href="#" class="mpBtnLogout text-white" data-toggle="modal" data-target="#logoutModal"></a></i></u></span>
+                </li>
+            </ul>
+            <button class="navbar-toggler navbar-toggler-right" type="button" data-toggle="collapse" data-target="#navbarResponsive"
+                aria-controls="navbarResponsive" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarResponsive">
+                <ul class="navbar-nav navbar-sidenav">
+                    <li id="DeviceInformationPageLi" class="nav-item text-center" data-toggle="tooltip" data-placement="right">
+                        <a class="nav-link pageLink" href="#DeviceInformationPage" id="DeviceInformationPage">
+                            <i class="fas fa-info"></i>
+                            <span class="nav-link-text">
+                                <span class="mpTabDeviceInformation"></span>
+                            </span>
+                        </a>
+                    </li>
+                    <li id="PumpsControlPageLi" class="nav-item d-none text-center" data-toggle="tooltip" data-placement="right">
+                        <a class="nav-link pageLink" href="#PumpsControlPage" id="PumpsControlPage">
+                            <i class="fas fa-gas-pump"></i>
+                            <span class="nav-link-text">
+                                <span class="mpTabPumpsControl"></span>
+                            </span>
+                        </a>
+                    </li>
+                    <li id="TanksMonitoringPageLi" class="nav-item d-none text-center" data-toggle="tooltip" data-placement="right">
+                        <a class="nav-link pageLink" href="#TanksMonitoringPage" id="TanksMonitoringPage">
+                            <i class="fas fa-database"></i>
+                            <span class="nav-link-text">
+                                <span class="mpTabTanksMonitoring"></span>
+                            </span>
+                        </a>
+                    </li>
+                    <li id="ReportingPageLi" class="nav-item d-none text-center" data-toggle="tooltip" data-placement="right">
+                        <a class="nav-link pageLink" href="#ReportingPage" id="ReportingPage">
+                            <i class="fas fa-chart-line"></i>
+                            <span class="nav-link-text">
+                                <span class="mpTabReporting"></span>
+                            </span>
+                        </a>
+                    </li>
+                </ul>
+                <ul class="navbar-nav sidenav-toggler">
+                    <li class="nav-item">
+                        <a class="nav-link text-center" id="sidenavToggler">
+                            <i id="sidenavTogglerArrow" class="fas fa-fw fa-angle-double-right"></i>
+                        </a>
+                    </li>
+                </ul>
+                <ul class="navbar-nav ml-auto d-none d-md-block">
+                    <li class="nav-item userInfo text-white">
+                        <span class="usernameSpanSm font-weight-bold"></span>
+                        <span><u><i><a href="#" class="mpBtnLogout text-white" data-toggle="modal" data-target="#logoutModal"></a></i></u></span>
+                    </li>
+                </ul>
+            </div>
+        </nav>
+        <div class="content-wrapper">
+            <div class="container-fluid">
+
+                <div id="mainContainer" class="mb-2"></div>
+
+            </div>
+            <!-- /.container-fluid-->
+            <!-- /.content-wrapper-->
+            <footer class="sticky-footer">
+                <div class="text-left pl-2">
+                    <small>
+                        <b><span class="mpControllerBottomLogo"></span> <span class="mpControllerName"></span></b> <span class="mpDevelopedBy"></span>
+                        <a class="font-weight-bold mpTechnotradeWebsiteAddress" target="_blank">
+                            <span class="mpTechnotradeLLC"></span>
+                        </a>
+                    </small>
+                </div>
+            </footer>
+
+            <!-- Scroll to Top Button-->
+            <a class="scroll-to-top rounded" href="#">
+                <i class="fa fa-fw fa-rotate-270 fa-angle-double-right"></i>
+            </a>
+            
+            <div id="message" class="d-none alert font-weight-bold" role="alert"></div>            
+
+            <div id="busyLoader">
+                <i class="fas fa-cog fa-spin fa-3x" aria-hidden="true"></i>
+            </div>
+
+            <!-- Logout Modal-->
+            <div class="modal fade" id="logoutModal" tabindex="-1" role="dialog" aria-labelledby="logoutModalLabel" aria-hidden="true">
+                <div class="modal-dialog" role="document">
+                    <div class="modal-content">
+                    <div class="modal-header bg-info text-white">
+                        <h5 class="modal-title font-weight-bold" id="logoutModalLabel"></h5>
+                        <button class="close" type="button" data-dismiss="modal" aria-label="Close">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <div class="modal-body mpLogoutText"></div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary mpLogoutCancel" type="button" data-dismiss="modal"></button>
+                        <a id="btnLogout" type="button" class="btn btn-warning mpBtnLogout"></a>
+                    </div>
+                    </div>
+                </div>
+            </div>
+
+            <script src="js/pts_config_en.js"></script>
+            <script src="js/pts_config_ru.js"></script>
+            <!-- build:js -->
+            <script src="js/jquery.min.js"></script>
+            <script src="js/bootstrap.bundle.min.js"></script>
+            <script src="js/chart.js"></script>
+            <script src="js/jquery.datetimepicker.full.min.js"></script>
+            <script src="js/pumpControl.js"></script>
+            <script src="js/tankControl.js"></script>
+            <script src="js/pts_datatables.js"></script>
+            <script src="js/datatables.min.js"></script>
+            <script src="js/stringLocalizations.js"></script>
+            <script src="js/pts.js"></script>
+            <script src="js/website.js"></script>
+            <script src="js/solid.js"></script>
+            <script src="js/fontawesome.js"></script>
+            <!-- endbuild -->
+        </div>
+    </body>
+
+</html>

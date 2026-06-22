@@ -1,11 +1,13 @@
 FROM python:3.12-slim
 
+RUN apt-get update && apt-get install -y cups-client cups-bsd && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY pyproject.toml requirements.txt ./
+COPY pyproject.toml requirements.txt run_backend.bat ./
 COPY pts2_sdk ./pts2_sdk
 COPY pts2_api ./pts2_api
 COPY examples ./examples

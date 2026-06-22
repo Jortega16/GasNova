@@ -18,6 +18,7 @@ import { Play, Pause, AlertOctagon, HelpCircle, Check, X, Fuel, Info, Plus, Prin
 import LoginScreen from './components/LoginScreen';
 import UserHubTab from './components/UserHubTab';
 import { api, printReceiptWindow } from './api';
+import SimUniPumpPanel from './components/SimUniPumpPanel';
 
 const getShiftNameFromId = (id: string, shiftBrackets: any[]) => {
   if (!id) return 'Matutino';
@@ -32,6 +33,33 @@ const getShiftNameFromId = (id: string, shiftBrackets: any[]) => {
 };
 
 export default function App() {
+  const checkIsActiveNozzle = (nozzleFuelType: string, nozzleNumber: number, pumpData: any) => {
+    const rawStatus = pumpData.status_type || pumpData.Status || pumpData.status;
+    if (rawStatus === 'PumpIdleStatus' || rawStatus === 'PumpOfflineStatus') {
+      return false;
+    }
+    
+    // Restore original nozzle ID matching behavior for Pumps 2 and 4
+    if (pumpData.pump === 2 || pumpData.pump === 4) {
+      const activeNozzleNumber = pumpData.nozzle || pumpData.Nozzle || pumpData.NozzleUp || 0;
+      return activeNozzleNumber === nozzleNumber;
+    }
+    
+    const gradeName = pumpData.fuel_grade_name || pumpData.FuelGradeName;
+    if (gradeName) {
+      const grade = gradeName.toLowerCase();
+      const type = nozzleFuelType.toLowerCase();
+      if (grade.includes('diesel') && type.includes('diesel')) return true;
+      if ((grade.includes('petrol') || grade.includes('regular') || grade.includes('super')) && type.includes('regular')) return true;
+      if (grade.includes('premium') && type.includes('premium')) return true;
+      if (grade.includes('lpg') && type.includes('lpg')) return true;
+      if (grade.includes('kerosene') && type.includes('kerosene')) return true;
+    }
+    
+    const activeNozzleNumber = pumpData.nozzle || pumpData.Nozzle || pumpData.NozzleUp || 0;
+    return activeNozzleNumber === nozzleNumber;
+  };
+
   // Navigation Tabs
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -53,6 +81,14 @@ export default function App() {
 
   // Simulation play state
   const [isSimulating, setIsSimulating] = useState<boolean>(true);
+
+  // SimUniPump web states
+  const [nozzleUpStates, setNozzleUpStates] = useState<{ [key: string]: boolean }>({});
+  const [triggerStates, setTriggerStates] = useState<{ [key: string]: boolean }>({});
+
+  // Connection health states
+  const [isApiOnline, setIsApiOnline] = useState<boolean>(true);
+  const [isPts2Online, setIsPts2Online] = useState<boolean>(false);
 
   // States for Nozzle pending transactions, modal & countdown scheduler
   const [consolidationSeconds, setConsolidationSeconds] = useState<number>(300);
@@ -78,7 +114,8 @@ export default function App() {
   // Active Pre-authorization dialog state
   const [preauthorizingPumpId, setPreauthorizingPumpId] = useState<number | null>(null);
   const [preauthFuelGrade, setPreauthFuelGrade] = useState<FuelType>('Regular Unleaded');
-  const [preauthMode, setPreauthMode] = useState<'Limit' | 'Full' | 'Postpaid' | 'LiftInmediate'>('Limit');
+  const [preauthMode, setPreauthMode] = useState<'Limit' | 'Full'>('Limit');
+  const [preauthLimitType, setPreauthLimitType] = useState<'Amount' | 'Volume'>('Amount');
   const [preauthAmount, setPreauthAmount] = useState<string>('20.00');
 
   // Create Cara/Dispenser Dialog modal state
@@ -90,7 +127,7 @@ export default function App() {
   const [shiftCount, setShiftCount] = useState<number>(3);
 
   // System Settings State
-  const [unitMeasure, setUnitMeasure] = useState<'Galones' | 'Litros'>('Galones');
+  const [unitMeasure, setUnitMeasure] = useState<'Galones' | 'Litros'>('Litros');
   const [currencySymbol, setCurrencySymbol] = useState('$');
   const [stationCountry, setStationCountry] = useState('Guatemala');
   const [stationCity, setStationCity] = useState('Ciudad de Guatemala');
@@ -107,6 +144,66 @@ export default function App() {
         if (data.station_city) setStationCity(data.station_city);
         if (data.station_canton !== undefined) setStationCanton(data.station_canton);
         if (data.station_department) setStationDepartment(data.station_department);
+
+        // Load base prices from system_settings
+        const keysMapping: Record<string, string> = {
+          'Regular Unleaded': 'price_regular_unleaded',
+          'Premium Unleaded': 'price_premium_unleaded',
+          'Diesel': 'price_diesel',
+          'Kerosene': 'price_kerosene',
+          'LPG': 'price_lpg'
+        };
+
+        setPrices(currentPrices => currentPrices.map(p => {
+          const settingKey = keysMapping[p.fuelType];
+          if (settingKey && data[settingKey]) {
+            const dbPrice = parseFloat(data[settingKey]);
+            if (!isNaN(dbPrice) && dbPrice > 0) {
+              return {
+                ...p,
+                price: dbPrice
+              };
+            }
+          }
+          return p;
+        }));
+
+        // Fetch transient pending transactions from DB and map to dispensers
+        const currentUnitMeasure = data.unit_measure || 'Litros';
+        api.getPendingTransactions().then(pRes => {
+          if (pRes.ok && pRes.data) {
+            const dbPending = pRes.data;
+            setDispensers(prev => prev.map(d => {
+              return {
+                ...d,
+                nozzles: d.nozzles.map(n => {
+                  const matches = dbPending.filter((pt: any) => pt.pumpId === d.id && pt.fuelType === n.fuelType);
+                  if (matches.length > 0) {
+                    const mapped = matches.map((pt: any) => {
+                      const volVal = currentUnitMeasure === 'Galones' ? pt.volume / 3.78541 : pt.volume;
+                      return {
+                        id: pt.id,
+                        dateTime: pt.dateTime,
+                        dispenserId: pt.pumpId,
+                        volume: volVal,
+                        amount: pt.amount,
+                        fuelType: pt.fuelType,
+                        status: 'Pending' as const,
+                        billingType: 'Ticket' as const,
+                        createdAt: Date.now()
+                      };
+                    });
+                    return {
+                      ...n,
+                      pendingTransactions: mapped
+                    };
+                  }
+                  return n;
+                })
+              };
+            }));
+          }
+        });
       }
     });
   };
@@ -114,6 +211,224 @@ export default function App() {
   useEffect(() => {
     fetchSystemSettings();
   }, []);
+
+  // Periodic health check for API and PTS-2 connectivity
+  useEffect(() => {
+    const runCheck = async () => {
+      const health = await api.checkPts2Health();
+      setIsApiOnline(health.apiConnected);
+      setIsPts2Online(health.pts2Connected);
+    };
+    runCheck();
+    const interval = setInterval(runCheck, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // ─── PTS-2 Real-time pump status polling (every 2 seconds) ───────────────────
+  // Maps jsonPTS states → dashboard states and updates volume/amount live.
+  useEffect(() => {
+    if (isSimulating) return;
+    /**
+     * Maps a jsonPTS status_type string to a dashboard PumpStatus.
+     *
+     * PumpIdleStatus        → 'Idle'
+     * PumpFillingStatus     → 'Dispensing'  (with live volume/amount)
+     * PumpEndOfTransaction  → 'EndOfTransaction'  (needs close + billing)
+     * PumpAuthorizedStatus  → 'Authorized'  (authorized, nozzle not yet lifted)
+     * PumpOfflineStatus     → 'Offline'
+     */
+    const mapPts2Status = (statusType: string): PumpStatus => {
+      switch (statusType) {
+        case 'PumpFillingStatus':      return 'Dispensing';
+        case 'PumpEndOfTransactionStatus': return 'EndOfTransaction';
+        case 'PumpAuthorizedStatus':   return 'Authorized';
+        case 'PumpOfflineStatus':      return 'Offline';
+        case 'PumpIdleStatus':
+        default:                       return 'Idle';
+      }
+    };
+
+    const pollPumps = async () => {
+      const res = await api.getAllPumpsStatus(dispensers.length > 0 ? dispensers.length : 4);
+      if (!res.ok || !res.pumps) return;
+
+      setDispensers(prev => prev.map(dispenser => {
+        const pumpData = res.pumps!.find(p => p.pump === dispenser.id);
+        if (!pumpData) return dispenser;
+
+        const pts2Status = mapPts2Status(pumpData.status_type);
+
+        return {
+          ...dispenser,
+          nozzles: dispenser.nozzles.map((nozzle, nozzleIdx) => {
+            // Determine if this nozzle is the active one from PTS-2
+            const thisNozzleNumber = nozzleIdx + 1;
+            const isActiveNozzle = checkIsActiveNozzle(nozzle.fuelType, thisNozzleNumber, pumpData);
+
+            // --- State update logic ---
+            // Only update nozzles from PTS-2 data when:
+            //  a) The nozzle is actively dispensing or end-of-transaction (PTS-2 is authoritative)
+            //  b) The nozzle was 'Authorized' (PTS-2 confirmed the authorization)
+            //  c) The nozzle is offline
+            //
+            // We DON'T override 'Blocked' or 'Prepaid' that the operator set locally
+            // (the PTS-2 can take up to 1-2s to reflect those — optimistic local state).
+
+            if (pts2Status === 'Dispensing' && isActiveNozzle) {
+              // Live dispensing: update volume, amount and progress
+              const vol = pumpData.volume ?? nozzle.currentVolume;
+              const amt = pumpData.amount ?? nozzle.currentAmount;
+              const limit = nozzle.limitAmount;
+              const progress = limit && limit > 0
+                ? Math.min(100, Math.round((amt / limit) * 100))
+                : nozzle.progressPercent;
+
+              return {
+                ...nozzle,
+                status: 'Dispensing',
+                currentVolume: vol,
+                currentAmount: amt,
+                progressPercent: progress,
+              };
+            }
+
+            if (pts2Status === 'EndOfTransaction' && isActiveNozzle) {
+              const lastVol = pumpData.last_volume ?? nozzle.currentVolume;
+              const lastAmt = pumpData.last_amount ?? nozzle.currentAmount;
+
+              // If it was a prepaid transaction, automatically close and complete it
+              if (nozzle.status === 'Prepaid') {
+                setTimeout(() => {
+                  const trxId = `TRX-${Math.floor(200 + Math.random() * 800)}`;
+                  const now = new Date();
+                  const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                  
+                  // Add directly to shift transactions list
+                  const formatted: Transaction = {
+                    id: trxId,
+                    dateTime: `Hoy ${timeStr}`,
+                    pumpId: dispenser.id,
+                    pumpName: `Cara ${dispenser.id} (${nozzle.fuelType === 'Regular Unleaded' ? 'Regular' : nozzle.fuelType === 'Premium Unleaded' ? 'Super' : 'Diesel'})`,
+                    volume: lastVol,
+                    amount: lastAmt,
+                    fuelType: nozzle.fuelType,
+                    paymentType: 'Cash'
+                  };
+                  setTransactions(prev => [formatted, ...prev]);
+
+                  // Persist to PostgreSQL database
+                  persistTransaction(dispenser.id, trxId, nozzle.fuelType, lastVol, lastAmt, 'Cash');
+
+                  // Deduct fuel from tank level
+                  setTanks(prevTanks => prevTanks.map(tank => {
+                    if (tank.fuelType === nozzle.fuelType) {
+                      const nextLvl = Math.max(0, tank.currentLevel - lastVol);
+                      return {
+                        ...tank,
+                        currentLevel: parseFloat(nextLvl.toFixed(1)),
+                        status: nextLvl < 3500 ? 'Low Level Alert' : 'OK'
+                      };
+                    }
+                    return tank;
+                  }));
+
+                  // Close transaction on backend
+                  api.closeTransaction(dispenser.id);
+
+                  // Add shift alert
+                  const customAlert: ShiftAlert = {
+                    id: `AL-PAID-${Math.random()}`,
+                    dateTime: `Hoy ${timeStr}`,
+                    pumpName: `Cara ${dispenser.id}`,
+                    volume: `${lastVol.toFixed(2)} L`,
+                    amount: `$${lastAmt.toFixed(2)}`,
+                    paymentType: 'Cash',
+                    message: `✓ Pago Recibido (Prepago): Cobro de $${lastAmt.toFixed(2)} liquidado para la Cara ${dispenser.id} (${nozzle.fuelType}).`,
+                    isCustomNote: true
+                  };
+                  setAlerts(prev => [customAlert, ...prev]);
+                }, 10);
+
+                return {
+                  ...nozzle,
+                  status: 'Idle',
+                  currentVolume: 0.0,
+                  currentAmount: 0.0,
+                  progressPercent: 0,
+                  limitAmount: undefined,
+                  isPostpaid: false,
+                };
+              }
+
+              // Otherwise (e.g. postpaid), show Unpaid (awaiting payment/close)
+              return {
+                ...nozzle,
+                status: 'Unpaid',
+                currentVolume: lastVol,
+                currentAmount: lastAmt,
+                progressPercent: 100,
+              };
+            }
+
+            if (pts2Status === 'Authorized' && isActiveNozzle) {
+              // Confirmed authorized by PTS-2 — keep as Prepaid in UI
+              if (nozzle.status !== 'Prepaid') {
+                return { ...nozzle, status: 'Prepaid' };
+              }
+            }
+
+            if (pts2Status === 'Offline') {
+              return { ...nozzle, status: 'Offline' };
+            }
+
+            if (pts2Status === 'Idle' && nozzle.status === 'Unpaid') {
+              // The nozzle was Unpaid but now the pump is Idle (i.e. hung up).
+              // Move the transaction to the pending transactions queue (venta en cola) and set nozzle status to Idle.
+              setTimeout(() => {
+                completeFuelingJob(dispenser.id, nozzle.currentVolume, nozzle.currentAmount, nozzle.fuelType);
+                api.closeTransaction(dispenser.id);
+              }, 10);
+
+              return {
+                ...nozzle,
+                status: 'Idle',
+                currentVolume: 0,
+                currentAmount: 0,
+                progressPercent: 0,
+                isPostpaid: false,
+                limitAmount: undefined,
+              };
+            }
+
+            if (pts2Status === 'Idle' && isActiveNozzle) {
+              // PTS-2 is now idle: only reset if dashboard also thinks it's done
+              // (avoid resetting a Prepaid that the PTS-2 hasn't processed yet)
+              if (nozzle.status === 'Dispensing') {
+                return {
+                  ...nozzle,
+                  status: 'Idle',
+                  currentVolume: 0,
+                  currentAmount: 0,
+                  progressPercent: 0,
+                  isPostpaid: false,
+                  limitAmount: undefined,
+                };
+              }
+            }
+
+            return nozzle;
+          }),
+        };
+      }));
+    };
+
+    const interval = setInterval(pollPumps, 2000);
+    // Run immediately on mount
+    pollPumps();
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispensers.length, isSimulating]);
+
   const [shiftBrackets, setShiftBrackets] = useState([
     { id: '1', name: 'Turno Matutino', start: '06:00', end: '14:00' },
     { id: '2', name: 'Turno Vespertino', start: '14:00', end: '22:00' },
@@ -140,7 +455,10 @@ export default function App() {
     if (shiftDetails.shiftId) {
       api.getShiftTransactions(shiftDetails.shiftId).then(res => {
         if (res.ok && res.data) {
-          setTransactions(res.data as Transaction[]);
+          const uniqueTx = (res.data as Transaction[]).filter((tx, index, self) =>
+            self.findIndex(t => t.id === tx.id) === index
+          );
+          setTransactions(uniqueTx);
         }
       });
     }
@@ -223,7 +541,7 @@ export default function App() {
     
     const valLimit = preauthMode === 'Limit' ? parseFloat(preauthAmount) : undefined;
     if (preauthMode === 'Limit' && (!valLimit || isNaN(valLimit) || valLimit <= 0)) {
-      alert('Por favor ingrese un monto válido para pre-autorizar.');
+      alert('Por favor ingrese un monto o volumen válido para pre-autorizar.');
       return;
     }
 
@@ -233,15 +551,14 @@ export default function App() {
           ...d,
           nozzles: d.nozzles.map(n => {
             if (n.fuelType === preauthFuelGrade) {
-              const isDirect = preauthMode === 'LiftInmediate';
               return {
                 ...n,
-                status: isDirect ? 'Dispensing' : 'Prepaid',
-                limitAmount: isDirect ? undefined : valLimit,
-                isPostpaid: preauthMode === 'Postpaid' || isDirect,
+                status: 'Prepaid',
+                limitAmount: valLimit,
+                isPostpaid: preauthMode === 'Full',
                 currentAmount: 0.0,
                 currentVolume: 0.0,
-                progressPercent: isDirect ? 1 : 0
+                progressPercent: 0
               };
             }
             return n;
@@ -256,33 +573,39 @@ export default function App() {
     const nozzleIndex = fuelGrades.indexOf(preauthFuelGrade);
     const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
     
-    if (preauthMode === 'Postpaid' || preauthMode === 'LiftInmediate' || preauthMode === 'Full') {
+    if (preauthMode === 'Full') {
       api.postpayAuthorizePump(preauthorizingPumpId, nozzleNumber);
     } else {
+      let finalLimit = valLimit;
+      if (preauthLimitType === 'Volume' && valLimit !== undefined && unitMeasure === 'Galones') {
+        finalLimit = valLimit * 3.78541;
+      }
       api.authorizePump(
         preauthorizingPumpId,
         nozzleNumber,
-        preauthMode === 'Limit' ? 'Amount' : undefined,
-        preauthMode === 'Limit' ? valLimit : undefined
+        preauthMode === 'Limit' ? preauthLimitType : undefined,
+        preauthMode === 'Limit' ? finalLimit : undefined
       );
     }
 
     // Add alert log
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const getModeLabel = () => {
-      if (preauthMode === 'Postpaid') return 'Postpago (Servicio Libre)';
-      if (preauthMode === 'LiftInmediate') return 'Autodespacho (Descolgar e Iniciar)';
-      if (preauthMode === 'Limit') return `Prepago $${valLimit?.toFixed(2)}`;
-      return 'Estanque Lleno (Full)';
+      if (preauthMode === 'Limit') {
+        return preauthLimitType === 'Amount'
+          ? `Prepago $${valLimit?.toFixed(2)}`
+          : `Prepago ${valLimit?.toFixed(2)} ${unitMeasure === 'Galones' ? 'Gal' : 'L'}`;
+      }
+      return 'Tanque Lleno';
     };
 
     const authNote: ShiftAlert = {
       id: `AL-AUTH-${Math.random()}`,
       dateTime: `Hoy ${timeStr}`,
       pumpName: `Cara ${preauthorizingPumpId} (${preauthFuelGrade})`,
-      volume: '0.00 Gal',
-      amount: preauthMode === 'Postpaid' ? 'Postpago' : preauthMode === 'LiftInmediate' ? 'Autodespacho' : valLimit ? `$${valLimit.toFixed(2)}` : 'S/L',
-      paymentType: preauthMode === 'Postpaid' ? 'Postpago' : preauthMode === 'LiftInmediate' ? 'Autodespacho' : 'Pre-auth',
+      volume: preauthMode === 'Limit' && preauthLimitType === 'Volume' && valLimit ? `${valLimit.toFixed(2)} ${unitMeasure === 'Galones' ? 'Gal' : 'L'}` : '0.00 Gal',
+      amount: preauthMode === 'Full' ? 'Tanque Lleno' : (preauthMode === 'Limit' && preauthLimitType === 'Amount' && valLimit ? `$${valLimit.toFixed(2)}` : 'S/L'),
+      paymentType: preauthMode === 'Full' ? 'Postpago' : 'Pre-auth',
       message: `Cara ${preauthorizingPumpId} autorizada para carga de ${preauthFuelGrade} (${getModeLabel()})`,
       isCustomNote: true
     };
@@ -290,8 +613,113 @@ export default function App() {
     setPreauthorizingPumpId(null);
   };
 
+  // SimUniPump web simulator event handlers
+  const handleToggleNozzleUp = (dispenserId: number, fuelType: FuelType) => {
+    const key = `${dispenserId}-${fuelType}`;
+    const wasUp = !!nozzleUpStates[key];
+    const nextUp = !wasUp;
+
+    setNozzleUpStates(prev => ({
+      ...prev,
+      [key]: nextUp
+    }));
+
+    if (!nextUp) {
+      // Nozzle is hung up: clear trigger and if it was dispensing, complete it
+      setTriggerStates(prev => ({
+        ...prev,
+        [key]: false
+      }));
+
+      setDispensers(prev => prev.map(d => {
+        if (d.id === dispenserId) {
+          return {
+            ...d,
+            nozzles: d.nozzles.map(n => {
+              if (n.fuelType === fuelType && n.status === 'Dispensing') {
+                const finalAmount = n.currentAmount;
+                const finalVolume = n.currentVolume;
+                setTimeout(() => {
+                  completeFuelingJob(dispenserId, finalVolume, finalAmount, fuelType);
+                }, 10);
+                return {
+                  ...n,
+                  status: 'Idle',
+                  currentAmount: 0.0,
+                  currentVolume: 0.0,
+                  progressPercent: 0,
+                  isPostpaid: false,
+                  limitAmount: undefined
+                };
+              }
+              return n;
+            })
+          };
+        }
+        return d;
+      }));
+    }
+  };
+
+  const handleToggleTrigger = (dispenserId: number, fuelType: FuelType) => {
+    const key = `${dispenserId}-${fuelType}`;
+    const wasActive = !!triggerStates[key];
+    const nextActive = !wasActive;
+
+    setTriggerStates(prev => ({
+      ...prev,
+      [key]: nextActive
+    }));
+
+    if (nextActive) {
+      // If nozzle is up and authorized (Prepaid or postpaid), transition to Dispensing
+      setDispensers(prev => prev.map(d => {
+        if (d.id === dispenserId) {
+          return {
+            ...d,
+            nozzles: d.nozzles.map(n => {
+              if (n.fuelType === fuelType) {
+                if (n.status === 'Prepaid' || n.isPostpaid) {
+                  api.startDispensing(dispenserId);
+                  return {
+                    ...n,
+                    status: 'Dispensing',
+                    progressPercent: n.progressPercent || 0
+                  };
+                }
+              }
+              return n;
+            })
+          };
+        }
+        return d;
+      }));
+    }
+  };
+
+  const handleResetAllSimulator = () => {
+    setNozzleUpStates({});
+    setTriggerStates({});
+    setDispensers(prev => prev.map(d => ({
+      ...d,
+      nozzles: d.nozzles.map(n => ({
+        ...n,
+        status: n.status === 'Dispensing' || n.status === 'Prepaid' ? 'Idle' : n.status,
+        currentAmount: 0.0,
+        currentVolume: 0.0,
+        progressPercent: 0,
+        limitAmount: undefined,
+        isPostpaid: false
+      }))
+    })));
+  };
+
   // Launch pre-authorized fuel load or simulate free refueling trigger
   const handleStartFuelingJob = (dispenserId: number, fuelType: FuelType) => {
+    // Sync SimUniPump visual state: set nozzle to Up
+    const key = `${dispenserId}-${fuelType}`;
+    setNozzleUpStates(prev => ({ ...prev, [key]: true }));
+
     setDispensers(prev => prev.map(d => {
       if (d.id === dispenserId) {
         return {
@@ -353,6 +781,10 @@ export default function App() {
         return;
       }
     }
+
+    // Sync SimUniPump visual state: set nozzle to Up
+    const key = `${dispenserId}-${fuelType}`;
+    setNozzleUpStates(prev => ({ ...prev, [key]: true }));
 
     setDispensers(prev => prev.map(d => {
       if (d.id === dispenserId) {
@@ -495,6 +927,26 @@ export default function App() {
       isCustomNote: true
     };
     setAlerts(prev => [stopAlert, ...prev]);
+  };
+
+  // Stop dispenser logically (PumpStop)
+  const handleStopPump = (dispenserId: number, fuelType: FuelType) => {
+    // Call backend to trigger stop
+    api.stopPump(dispenserId).then(() => {
+      // Add shift alert log
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const stopNote: ShiftAlert = {
+        id: `AL-STP-${Math.random()}`,
+        dateTime: `Hoy ${timeStr}`,
+        pumpName: `Cara ${dispenserId}`,
+        volume: '0.00 Gal',
+        amount: '$0.00',
+        paymentType: 'Stop',
+        message: `Mando de Detener (PumpStop) enviado a la Cara ${dispenserId} (${fuelType})`,
+        isCustomNote: true
+      };
+      setAlerts(prev => [stopNote, ...prev]);
+    });
   };
 
   // Unlock / reset pump to general Ready state
@@ -776,6 +1228,69 @@ export default function App() {
     });
   };
 
+  const handleFetchPricesFromPts2 = async () => {
+    const res = await api.getPumpPrices(1);
+    if (res.ok && res.prices && res.prices.length > 0) {
+      const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene', 'LPG'];
+      const keysMapping: Record<string, string> = {
+        'Regular Unleaded': 'price_regular_unleaded',
+        'Premium Unleaded': 'price_premium_unleaded',
+        'Diesel': 'price_diesel',
+        'Kerosene': 'price_kerosene',
+        'LPG': 'price_lpg'
+      };
+
+      for (const p of prices) {
+        const nozzleIndex = fuelGrades.indexOf(p.fuelType);
+        const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+        const match = res.prices.find((item: any) => (item.Nozzle || item.nozzle) === nozzleNumber);
+        if (match) {
+          const priceVal = match.Price !== undefined ? match.Price : p.price;
+          
+          setPrices(currentPrices => currentPrices.map(oldPrice => 
+            oldPrice.fuelType === p.fuelType 
+              ? { ...oldPrice, price: priceVal, lastUpdated: `Hoy ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` }
+              : oldPrice
+          ));
+
+          const settingKey = keysMapping[p.fuelType];
+          if (settingKey) {
+            await api.updateSystemSetting(settingKey, String(priceVal));
+          }
+        }
+      }
+    } else {
+      throw new Error(res.error || 'No se pudieron recuperar los precios desde el controlador PTS-2.');
+    }
+  };
+
+  const handleSyncPricesToPts2 = async () => {
+    const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene', 'LPG'];
+    const keysMapping: Record<string, string> = {
+      'Regular Unleaded': 'price_regular_unleaded',
+      'Premium Unleaded': 'price_premium_unleaded',
+      'Diesel': 'price_diesel',
+      'Kerosene': 'price_kerosene',
+      'LPG': 'price_lpg'
+    };
+
+    for (const p of prices) {
+      const nozzleIndex = fuelGrades.indexOf(p.fuelType);
+      const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+
+      const settingKey = keysMapping[p.fuelType];
+      if (settingKey) {
+        await api.updateSystemSetting(settingKey, String(p.price));
+      }
+
+      for (const d of dispensers) {
+        if (d.nozzles.some(n => n.fuelType === p.fuelType)) {
+          await api.setPumpPrices(d.id, [{ nozzle: nozzleNumber, price: p.price }]);
+        }
+      }
+    }
+  };
+
   // Adding programmed price plan
   const handleAddScheduledPrice = (dateTime: string, fuelType: FuelType, newPrice: number) => {
     const randomId = `SP-${Math.floor(100 + Math.random() * 900)}`;
@@ -819,7 +1334,7 @@ export default function App() {
         return {
           ...t,
           currentLevel: newLvl,
-          recentDelivery: `Hoy ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (${gallons} Gal)`,
+          recentDelivery: `Hoy ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (${gallons} ${unitMeasure === 'Galones' ? 'Gal' : 'L'})`,
           status: newLvl < 3500 ? 'Low Level Alert' : 'OK',
           estDaysRemaining: dayRemaining
         };
@@ -828,9 +1343,9 @@ export default function App() {
     }));
 
     // Save to PostgreSQL backend
-    const liters = gallons * 3.78541;
+    const liters = unitMeasure === 'Galones' ? gallons * 3.78541 : gallons;
     const tankNum = parseInt(tankId.replace('T-', '')) || 1;
-    api.saveTankDelivery(tankNum, liters, undefined, 'Chofer Cisterna', 'TRUCK-109', `Recarga de ${gallons} Galones`).then(res => {
+    api.saveTankDelivery(tankNum, liters, undefined, 'Chofer Cisterna', 'TRUCK-109', `Recarga de ${gallons} ${unitMeasure === 'Galones' ? 'Galones' : 'Litros'}`).then(res => {
       if (res.ok) {
         console.log('Tank delivery persisted in Postgres successfully');
       }
@@ -975,6 +1490,13 @@ export default function App() {
       return d;
     }));
 
+    // Save to transient pending transactions database
+    const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
+    const nozzleIndex = fuelGrades.indexOf(fuelType);
+    const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+    const volumeLiters = unitMeasure === 'Galones' ? volume * 3.78541 : volume;
+    api.savePendingTransaction(dispenserId, randomTrxId, nozzleNumber, volumeLiters, amount, fuelType);
+
     // Trigger alert
     const newAlertItem: ShiftAlert = {
       id: `AL-MOCK-${Math.random()}`,
@@ -1039,6 +1561,9 @@ export default function App() {
 
       // Persist to PostgreSQL backend
       persistTransaction(dispenserId, pTx.id, pTx.fuelType, pTx.volume, pTx.amount, formatted.paymentType);
+      
+      // Delete from transient table in PostgreSQL backend
+      api.deletePendingTransaction(dispenserId, pTx.id);
 
       // Trigger safety log note
       const now = new Date();
@@ -1097,6 +1622,7 @@ export default function App() {
       // Persist to PostgreSQL backend
       newTransactions.forEach(tx => {
         persistTransaction(tx.pumpId, tx.id, tx.fuelType, tx.volume, tx.amount, tx.paymentType);
+        api.deletePendingTransaction(tx.pumpId, tx.id);
       });
 
       const now = new Date();
@@ -1105,8 +1631,8 @@ export default function App() {
         id: `SYS-AL-${Math.random()}`,
         dateTime: `Hoy ${timeStr}`,
         pumpName: `Cara ${dispenserId}`,
-        volume: `${newTransactions.reduce((acc, t) => acc + t.volume, 0).toFixed(1)} G`,
-        amount: `$${newTransactions.reduce((acc, t) => acc + t.amount, 0).toFixed(2)}`,
+        volume: `${newTransactions.reduce((acc, t) => acc + t.volume, 0).toFixed(1)} ${unitMeasure === 'Galones' ? 'Gal' : 'L'}`,
+        amount: `${currencySymbol}${newTransactions.reduce((acc, t) => acc + t.amount, 0).toFixed(2)}`,
         paymentType: 'Manguera-Batch',
         message: `Vaciado y procesamiento de lote completo (${newTransactions.length} despachos) de la manguera finalizado correctamente por el operador.`,
         isCustomNote: true
@@ -1125,64 +1651,121 @@ export default function App() {
     }
   }, [currentUser]);
 
-  // Polling effect to sync with the backend
+  // WebSocket connection for real-time dispenser updates
   useEffect(() => {
-    let active = true;
-    const interval = setInterval(async () => {
-      // Polling status of dispensers
-      for (const disp of dispensers) {
-        const res = await api.getPumpStatus(disp.id);
-        if (!active) return;
-        if (res.ok && res.status) {
-          const backendStatus = res.status;
-          const nozzleId = backendStatus.nozzle || 1;
-          const volume = backendStatus.volume || 0;
-          const amount = backendStatus.amount || 0;
+    if (isSimulating) return;
 
-          setDispensers(prev => prev.map(d => {
-            if (d.id === disp.id) {
-              return {
-                ...d,
-                nozzles: d.nozzles.map((n, idx) => {
-                  const isTargetNozzle = (idx + 1) === nozzleId;
-                  if (isTargetNozzle) {
+    const sockets: WebSocket[] = [];
+    const baseApiUrl = (import.meta as any).env.VITE_API_BASE_URL || 'http://localhost:8002';
+    const baseWsUrl = baseApiUrl.replace('http://', 'ws://').replace('https://', 'wss://');
+
+    dispensers.forEach(disp => {
+      const wsUrl = `${baseWsUrl}/ws/pumps?pump_id=${disp.id}&interval=0.5`;
+      const ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type === 'pump_status' && payload.data) {
+            const backendStatus = payload.data;
+            const nozzleId = backendStatus.Nozzle || backendStatus.nozzle || 1;
+            const volume = backendStatus.Volume !== undefined ? backendStatus.Volume : backendStatus.volume || 0;
+            const amount = backendStatus.Amount !== undefined ? backendStatus.Amount : backendStatus.amount || 0;
+            const rawStatus = backendStatus.Status || backendStatus.status;
+
+            setDispensers(prev => prev.map(d => {
+              if (d.id === disp.id) {
+                const activeNozzleId = backendStatus.Nozzle || backendStatus.nozzle || 0;
+                return {
+                  ...d,
+                  nozzles: d.nozzles.map((n, idx) => {
+                    const thisNozzleNumber = idx + 1;
+                    const isTargetNozzle = checkIsActiveNozzle(n.fuelType, thisNozzleNumber, backendStatus);
+
                     let mappedStatus = n.status;
-                    if (backendStatus.status === 'PumpIdleStatus') {
-                      mappedStatus = 'Idle';
-                    } else if (backendStatus.status === 'PumpFillingStatus') {
-                      mappedStatus = 'Dispensing';
-                    } else if (backendStatus.status === 'PumpEndOfTransactionStatus') {
+                    let currentVol = isTargetNozzle ? volume : 0;
+                    let currentAmt = isTargetNozzle ? amount : 0;
+
+                    if (n.status === 'Unpaid') {
                       mappedStatus = 'Unpaid';
-                    } else if (backendStatus.status === 'PumpOfflineStatus') {
+                      currentVol = n.currentVolume;
+                      currentAmt = n.currentAmount;
+                    } else if (rawStatus === 'PumpOfflineStatus') {
                       mappedStatus = 'Blocked';
+                    } else if (rawStatus === 'PumpIdleStatus') {
+                      if (isTargetNozzle) {
+                        mappedStatus = 'Ready';
+                      } else {
+                        mappedStatus = 'Idle';
+                      }
+                    } else if (rawStatus === 'PumpFillingStatus') {
+                      if (isTargetNozzle) {
+                        mappedStatus = 'Dispensing';
+                      } else {
+                        mappedStatus = 'Idle';
+                      }
+                    } else if (rawStatus === 'PumpEndOfTransactionStatus') {
+                      if (isTargetNozzle) {
+                        mappedStatus = 'Unpaid';
+                        currentVol = volume || n.currentVolume;
+                        currentAmt = amount || n.currentAmount;
+                      } else {
+                        mappedStatus = 'Idle';
+                      }
                     }
-                    
+
                     return {
                       ...n,
                       status: mappedStatus,
-                      currentAmount: amount,
-                      currentVolume: volume,
-                      progressPercent: backendStatus.status === 'PumpFillingStatus' ? Math.min(99, Math.round((volume / 15) * 100)) : n.progressPercent
+                      currentAmount: currentAmt,
+                      currentVolume: currentVol,
+                      progressPercent: (isTargetNozzle && rawStatus === 'PumpFillingStatus')
+                        ? Math.min(99, Math.round((volume / 15) * 100))
+                        : (isTargetNozzle ? n.progressPercent : 0)
                     };
-                  }
-                  return n;
-                })
-              };
-            }
-            return d;
-          }));
+                  })
+                };
+              }
+              return d;
+            }));
+          }
+        } catch (err) {
+          console.error("Error parsing WebSocket message:", err);
         }
-      }
+      };
 
+      ws.onerror = (err) => {
+        console.warn(`WebSocket error on pump ${disp.id}:`, err);
+      };
+
+      sockets.push(ws);
+    });
+
+    return () => {
+      sockets.forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+      });
+    };
+  }, [isSimulating, dispensers.length]);
+
+  // Polling effect to sync with the backend (tanks and prices) when online (isSimulating = false)
+  useEffect(() => {
+    if (isSimulating) return;
+
+    let active = true;
+    const interval = setInterval(async () => {
       // Fetch tank levels (convert Liters to Gallons)
       const tankRes = await api.getProbeMeasurements();
       if (!active) return;
       if (tankRes.ok && tankRes.measurements) {
         setTanks(prev => prev.map(t => {
           const matchId = t.id === 'T-01' ? 1 : t.id === 'T-02' ? 2 : t.id === 'T-03' ? 3 : 0;
-          const meas = tankRes.measurements?.find(m => m.tank_id === matchId);
-          if (meas && meas.volume !== undefined) {
-            const gallons = parseFloat((meas.volume / (unitMeasure === 'Litros' ? 1.0 : 3.78541)).toFixed(1));
+          const meas: any = tankRes.measurements?.find((m: any) => (m.Probe || m.probe || m.tank_id) === matchId);
+          const rawVol = meas ? (meas.ProductVolume !== undefined ? meas.ProductVolume : (meas.product_volume !== undefined ? meas.product_volume : meas.volume)) : undefined;
+          if (meas && rawVol !== undefined) {
+            const gallons = parseFloat((rawVol / (unitMeasure === 'Litros' ? 1.0 : 3.78541)).toFixed(1));
             return {
               ...t,
               currentLevel: gallons,
@@ -1191,6 +1774,31 @@ export default function App() {
           }
           return t;
         }));
+      }
+
+      // Fetch current active prices from PTS-2 (using pump 1 as reference) if online
+      if (isPts2Online) {
+        const priceRes = await api.getPumpPrices(1);
+        if (!active) return;
+        if (priceRes.ok && priceRes.prices && priceRes.prices.length > 0) {
+          const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
+          setPrices(currentPrices => currentPrices.map(p => {
+            const nozzleIndex = fuelGrades.indexOf(p.fuelType);
+            const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+            const match = priceRes.prices?.find((item: any) => (item.Nozzle || item.nozzle) === nozzleNumber);
+            if (match) {
+              const priceVal = match.Price !== undefined ? match.Price : p.price;
+              if (p.price !== priceVal) {
+                return {
+                  ...p,
+                  price: priceVal,
+                  lastUpdated: `Hoy ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                };
+              }
+            }
+            return p;
+          }));
+        }
       }
 
       // Fetch scheduled prices to check if any transitioned from Pending to Applied
@@ -1239,7 +1847,7 @@ export default function App() {
       active = false;
       clearInterval(interval);
     };
-  }, [dispensers]);
+  }, [isSimulating, unitMeasure, isPts2Online]);
 
   // 5-minute auto-consolidation logic per individual transaction
   useEffect(() => {
@@ -1305,6 +1913,7 @@ export default function App() {
         // Persist all auto-consolidated transactions to backend
         formattedTrxs.forEach(tx => {
           persistTransaction(tx.pumpId, tx.id, tx.fuelType, tx.volume, tx.amount, tx.paymentType);
+          api.deletePendingTransaction(tx.pumpId, tx.id);
         });
 
         // Trigger safety alert log for each auto-consolidation
@@ -1329,6 +1938,49 @@ export default function App() {
 
   // Load users, active shift, and scheduled prices from backend on mount
   useEffect(() => {
+    // Fetch pumps configuration
+    api.getPumpsConfiguration().then(res => {
+      if (res.ok && res.data) {
+        const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene', 'LPG'];
+        const mappedPumps = res.data.map((p: any) => {
+          const nozzles = [];
+          const count = p.nozzles_count || 3;
+          for (let i = 0; i < count; i++) {
+            nozzles.push({
+              fuelType: fuelGrades[i] || 'Regular Unleaded',
+              status: 'Idle' as PumpStatus,
+              currentAmount: 0.0,
+              currentVolume: 0.0,
+              progressPercent: 0,
+            });
+          }
+          return {
+            id: p.id,
+            name: p.name || `Cara ${p.id}`,
+            nozzles: nozzles,
+          };
+        });
+        setDispensers(mappedPumps);
+      }
+    });
+
+    // Fetch tanks configuration
+    api.getTanksConfiguration().then(res => {
+      if (res.ok && res.data) {
+        const mappedTanks = res.data.map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          fuelType: item.fuelType as FuelType,
+          currentLevel: item.fuelType === 'Regular Unleaded' ? 6525.0 : item.fuelType === 'Diesel' ? 6736.4 : 412.1,
+          maxCapacity: item.maxCapacity || 26417.0,
+          recentDelivery: item.fuelType === 'Regular Unleaded' ? '2024-05-25 (2000 Gal)' : item.fuelType === 'Diesel' ? '2024-05-20 (1500 Gal)' : '2024-05-26 (3000 Gal)',
+          estDaysRemaining: item.fuelType === 'Regular Unleaded' ? 5 : item.fuelType === 'Diesel' ? 8 : 2,
+          status: item.fuelType === 'LPG' ? 'Low Level Alert' : 'OK'
+        }));
+        setTanks(mappedTanks);
+      }
+    });
+
     api.getUsers().then(res => {
       if (res.ok && res.data) {
         setUsers(res.data);
@@ -1350,7 +2002,10 @@ export default function App() {
           // Cargar las transacciones del turno activo desde la base de datos
           api.getShiftTransactions(active.shift_id).then(tRes => {
             if (tRes.ok && tRes.data) {
-              setTransactions(tRes.data as Transaction[]);
+              const uniqueTx = (tRes.data as Transaction[]).filter((tx, index, self) =>
+                self.findIndex(t => t.id === tx.id) === index
+              );
+              setTransactions(uniqueTx);
             } else {
               // Si falla o está vacío, iniciar con un arreglo vacío
               setTransactions([]);
@@ -1661,7 +2316,9 @@ export default function App() {
         const nextDispensers = prevDispensers.map(d => {
           let hasDispensingNozzle = false;
           const nextNozzles = d.nozzles.map(n => {
-            if (n.status === 'Dispensing') {
+            const key = `${d.id}-${n.fuelType}`;
+            const isTriggerActive = !!triggerStates[key];
+            if (n.status === 'Dispensing' && isTriggerActive) {
               isUpdated = true;
               hasDispensingNozzle = true;
               
@@ -1752,7 +2409,7 @@ export default function App() {
     }, 1200);
 
     return () => clearInterval(interval);
-  }, [isSimulating, prices]);
+  }, [isSimulating, prices, triggerStates]);
 
   // Helper to persist transaction to Postgres backend database
   const persistTransaction = (
@@ -1763,13 +2420,19 @@ export default function App() {
     amount: number,
     paymentType: string
   ) => {
-    const numericTrxId = parseInt(trxId.replace(/\D/g, '')) || Math.floor(Math.random() * 10000);
+    let numericTrxId = 0;
+    for (let i = 0; i < trxId.length; i++) {
+      const char = trxId.charCodeAt(i);
+      numericTrxId = (numericTrxId << 5) - numericTrxId + char;
+      numericTrxId = numericTrxId & numericTrxId;
+    }
+    numericTrxId = Math.abs(numericTrxId) % 10000000;
     const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
     const nozzleIndex = fuelGrades.indexOf(fuelType);
     const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
 
-    // Convert volume from gallons to liters for Postgres backend
-    const volumeLiters = volume * 3.78541;
+    // Convert volume to liters only if unitMeasure is Galones
+    const volumeLiters = unitMeasure === 'Galones' ? volume * 3.78541 : volume;
 
     api.saveTransaction(pumpId, numericTrxId, nozzleNumber, volumeLiters, amount, paymentType).then(res => {
       if (res.ok) {
@@ -1784,18 +2447,20 @@ export default function App() {
     volume: number, 
     amount: number, 
     fuelType: FuelType,
-    paymentType?: 'Credit Card' | 'Debit Card' | 'Cash' | 'Fleet Card'
+    paymentType?: 'Credit Card' | 'Debit Card' | 'Cash' | 'Fleet Card',
+    trxId?: string,
+    dateTimeStr?: string
   ) => {
     // 1. Add Transaction Log (Pending at Nozzle Level)
-    const randomTrxId = `TRX-${Math.floor(200 + Math.random() * 800)}`;
+    const randomTrxId = trxId || `TRX-${Math.floor(200 + Math.random() * 800)}`;
     const now = new Date();
-    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const timeStr = dateTimeStr || `Hoy ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
     const randPayment: 'Credit Card' | 'Debit Card' | 'Cash' | 'Fleet Card' = 
       paymentType || (Math.random() > 0.6 ? 'Credit Card' : Math.random() > 0.4 ? 'Debit Card' : Math.random() > 0.2 ? 'Cash' : 'Fleet Card');
 
     const nozzleTrx: NozzleTransaction = {
       id: randomTrxId,
-      dateTime: `Hoy ${timeStr}`,
+      dateTime: timeStr.includes('Hoy') ? timeStr : `Hoy ${timeStr}`,
       dispenserId,
       volume,
       amount,
@@ -1811,6 +2476,8 @@ export default function App() {
           ...d,
           nozzles: d.nozzles.map(n => {
             if (n.fuelType === fuelType) {
+              const alreadyExists = n.pendingTransactions?.some(pt => pt.id === randomTrxId);
+              if (alreadyExists) return n;
               return {
                 ...n,
                 pendingTransactions: [...(n.pendingTransactions || []), nozzleTrx]
@@ -1822,6 +2489,22 @@ export default function App() {
       }
       return d;
     }));
+
+    // Save to transient pending transactions database if it's a new completed sale (not restoring from DB)
+    if (!trxId) {
+      const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
+      const nozzleIndex = fuelGrades.indexOf(fuelType);
+      const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+      const volumeLiters = unitMeasure === 'Galones' ? volume * 3.78541 : volume;
+      console.log(`[completeFuelingJob] Guardando venta en cola en BD: pump=${dispenserId}, trx=${randomTrxId}, nozzle=${nozzleNumber}, volume=${volumeLiters}, amount=${amount}`);
+      api.savePendingTransaction(dispenserId, randomTrxId, nozzleNumber, volumeLiters, amount, fuelType).then(res => {
+        if (res.ok) {
+          console.log(`[completeFuelingJob] Venta en cola ${randomTrxId} guardada en BD exitosamente.`);
+        } else {
+          console.error(`[completeFuelingJob] Error guardando venta en cola ${randomTrxId} en BD:`, res.error);
+        }
+      });
+    }
 
     // 2. Reduce Tank Levels
     setTanks(prevTanks => prevTanks.map(tank => {
@@ -1910,55 +2593,7 @@ export default function App() {
 
 
 
-              {/* Alerta de Tanque Bajo (Menos del 15% con animación de pulso) */}
-              {tanks.some(tank => (tank.currentLevel / tank.maxCapacity) < 0.15) && (
-                <div className="bg-red-50 border-2 border-red-500 rounded-xl p-4 shadow-md flex flex-col md:flex-row items-center justify-between gap-4 animate-pulse-alert" id="tank-low-capacity-danger-alert">
-                  <div className="flex items-center gap-3">
-                    <span className="text-red-600 bg-red-100 p-2.5 rounded-full shrink-0 flex items-center justify-center">
-                      <AlertOctagon className="w-5 h-5 text-red-600" />
-                    </span>
-                    <div>
-                      <p className="font-sans font-extrabold text-xs uppercase tracking-wider text-red-800 flex items-center gap-1.5">
-                        ALERTA DE SEGURIDAD: INVENTARIO DE TANQUE BAJO (MENOS DEL 15%)
-                      </p>
-                      <p className="text-xs text-slate-700 mt-1">
-                        Los siguientes tanques de almacenamiento están por debajo del nivel de contingencia (15%):
-                      </p>
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        {tanks
-                          .filter(tank => (tank.currentLevel / tank.maxCapacity) < 0.15)
-                          .map(tank => {
-                            const pct = ((tank.currentLevel / tank.maxCapacity) * 100).toFixed(1);
-                            return (
-                              <div key={tank.id} className="bg-white border border-red-200 rounded px-2.5 py-1.5 text-slate-800 font-mono text-[10.5px] font-bold flex items-center gap-1.5 shadow-sm">
-                                <span className="inline-block w-2 h-2 rounded-full bg-red-600 animate-ping" />
-                                <span className="font-sans text-slate-500">{tank.name} ({tank.fuelType === 'Regular Unleaded' ? 'Regular' : tank.fuelType === 'Premium Unleaded' ? 'Súper' : 'Diesel'}):</span>
-                                <span className="text-red-700 font-extrabold">{tank.currentLevel.toLocaleString()} Gal ({pct}%)</span>
-                              </div>
-                            );
-                          })}
-                      </div>
-                    </div>
-                  </div>
-                  
-                  {/* Action block to quickly refill */}
-                  <div className="flex flex-wrap gap-1.5 shrink-0 self-end md:self-center">
-                    {tanks
-                      .filter(tank => (tank.currentLevel / tank.maxCapacity) < 0.15)
-                      .map(tank => (
-                        <button
-                          key={tank.id}
-                          onClick={() => handleRefillTank(tank.id, 5000)}
-                          className="bg-red-700 hover:bg-red-800 text-white font-sans font-bold text-[10px] uppercase px-3 py-1.5 rounded transition-all shadow-sm cursor-pointer flex items-center gap-1 hover:scale-105 active:scale-95"
-                          title={`Suministrar 5,000 Galones a ${tank.name}`}
-                        >
-                          <RefreshCw className="w-3.5 h-3.5 text-white" />
-                          <span>Reabastecer {tank.name} (+5k Gal)</span>
-                        </button>
-                      ))}
-                  </div>
-                </div>
-              )}
+
 
               {isShiftClosing && (
                 <div className="bg-gradient-to-r from-amber-500/15 via-amber-600/10 to-amber-500/5 border-2 border-amber-300 text-slate-800 rounded-xl p-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4 animate-pulse" id="shift-closure-waiting-banner">
@@ -1997,6 +2632,8 @@ export default function App() {
                   <CaraCard
                     key={dispenser.id}
                     dispenser={dispenser}
+                    unitMeasure={unitMeasure}
+                    currencySymbol={currencySymbol}
                     onPreAuthorize={handlePreAuthorizeClick}
                     onStartFueling={handleStartFuelingJob}
                     onEmergencyStop={handleEmergencyStopClick}
@@ -2010,9 +2647,11 @@ export default function App() {
                       'Premium Unleaded': prices.find(p => p.fuelType === 'Premium Unleaded')?.price || 4.69,
                       'Diesel': prices.find(p => p.fuelType === 'Diesel')?.price || 4.49,
                       'Kerosene': prices.find(p => p.fuelType === 'Kerosene')?.price || 3.89,
+                      'LPG': prices.find(p => p.fuelType === 'LPG')?.price || 3.50,
                     }}
                     enabledPaymentMethods={enabledPaymentMethods}
                     paymentMethods={paymentMethods}
+                    onStopPump={handleStopPump}
                     onPressNozzle={(dispenserId, fuelType) => {
                       setSelectedNozzleForTrx({ dispenserId, fuelType });
                       setSelectedNozzleTrx(null);
@@ -2020,6 +2659,20 @@ export default function App() {
                     }}
                   />
                 ))}
+              </div>
+
+              {/* SimUniPump Panel */}
+              <div className="my-6">
+                <SimUniPumpPanel
+                  dispensers={dispensers}
+                  isSimulating={isSimulating}
+                  setIsSimulating={setIsSimulating}
+                  onToggleNozzleUp={handleToggleNozzleUp}
+                  nozzleUpStates={nozzleUpStates}
+                  triggerStates={triggerStates}
+                  onToggleTrigger={handleToggleTrigger}
+                  onResetAllSimulator={handleResetAllSimulator}
+                />
               </div>
 
               {/* Status Reference Bar Guide */}
@@ -2041,8 +2694,16 @@ export default function App() {
                   <span className="text-[10px] font-medium text-slate-400">Prepago Autorizado</span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-rose-400 shadow-sm shadow-rose-400/50" />
+                  <span className="w-2 h-2 rounded-full bg-rose-400 shadow-sm shadow-rose-400/50 animate-bounce" />
+                  <span className="text-[10px] font-medium text-rose-400 font-bold">Cobro Pendiente</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-red-500 shadow-sm shadow-red-500/50" />
                   <span className="text-[10px] font-medium text-slate-400">Bloqueada / Cerrada</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-slate-700" />
+                  <span className="text-[10px] font-medium text-slate-400">Sin Señal / Offline</span>
                 </div>
               </div>
 
@@ -2053,21 +2714,40 @@ export default function App() {
               <RecentTransactions
                 transactions={transactions}
                 searchQuery={searchQuery}
+                currencySymbol={currencySymbol}
+                unitMeasure={unitMeasure}
               />
             </div>
           </div>
         );
         
-      case 'priceConfig':
+      case 'priceConfig': {
+        const enrichedPrices = prices
+          .filter(p => tanks.some(t => t.fuelType === p.fuelType))
+          .map(p => {
+            const matchedTanks = tanks.filter(t => t.fuelType === p.fuelType).map(t => t.name);
+            return {
+              ...p,
+              tankNames: matchedTanks.join(', ')
+            };
+          });
+
+        const filteredScheduledPrices = scheduledPrices.filter(sp =>
+          tanks.some(t => t.fuelType === sp.fuelType)
+        );
+
         return (
           <PriceConfigTab
-            prices={prices}
-            scheduledPrices={scheduledPrices}
+            prices={enrichedPrices}
+            scheduledPrices={filteredScheduledPrices}
             onUpdatePrice={handleUpdatePrice}
             onAddScheduledPrice={handleAddScheduledPrice}
             onCancelScheduledPrice={handleCancelScheduledPrice}
+            onFetchPricesFromPts2={handleFetchPricesFromPts2}
+            onSyncPricesToPts2={handleSyncPricesToPts2}
           />
         );
+      }
 
       case 'shiftReport': {
         const currentlyDispensingCount = dispensers.reduce((cnt, d) => {
@@ -2093,12 +2773,63 @@ export default function App() {
 
       case 'inventory':
         return (
-          <InventoryTab
-            tanks={tanks}
-            onRefillTank={handleRefillTank}
-            onAddTank={handleAddTank}
-            setTanks={setTanks}
-          />
+          <div className="space-y-6">
+            {/* Alerta de Tanque Bajo (Menos del 15% con animación de pulso) */}
+            {tanks.some(tank => (tank.currentLevel / tank.maxCapacity) < 0.15) && (
+              <div className="bg-red-50 border-2 border-red-500 rounded-xl p-4 shadow-md flex flex-col md:flex-row items-center justify-between gap-4 animate-pulse-alert" id="tank-low-capacity-danger-alert">
+                <div className="flex items-center gap-3">
+                  <span className="text-red-600 bg-red-100 p-2.5 rounded-full shrink-0 flex items-center justify-center">
+                    <AlertOctagon className="w-5 h-5 text-red-600" />
+                  </span>
+                  <div>
+                    <p className="font-sans font-extrabold text-xs uppercase tracking-wider text-red-800 flex items-center gap-1.5">
+                      ALERTA DE SEGURIDAD: INVENTARIO DE TANQUE BAJO (MENOS DEL 15%)
+                    </p>
+                    <p className="text-xs text-slate-700 mt-1">
+                      Los siguientes tanques de almacenamiento están por debajo del nivel de contingencia (15%):
+                    </p>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {tanks
+                        .filter(tank => (tank.currentLevel / tank.maxCapacity) < 0.15)
+                        .map(tank => {
+                          const pct = ((tank.currentLevel / tank.maxCapacity) * 100).toFixed(1);
+                          return (
+                            <div key={tank.id} className="bg-white border border-red-200 rounded px-2.5 py-1.5 text-slate-800 font-mono text-[10.5px] font-bold flex items-center gap-1.5 shadow-sm">
+                              <span className="inline-block w-2 h-2 rounded-full bg-red-600 animate-ping" />
+                              <span className="font-sans text-slate-500">{tank.name} ({tank.fuelType === 'Regular Unleaded' ? 'Regular' : tank.fuelType === 'Premium Unleaded' ? 'Súper' : tank.fuelType === 'Diesel' ? 'Diesel' : 'LPG'}):</span>
+                              <span className="text-red-700 font-extrabold">{tank.currentLevel.toLocaleString()} Gal ({pct}%)</span>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                </div>
+                
+                {/* Action block to quickly refill */}
+                <div className="flex flex-wrap gap-1.5 shrink-0 self-end md:self-center">
+                  {tanks
+                    .filter(tank => (tank.currentLevel / tank.maxCapacity) < 0.15)
+                    .map(tank => (
+                      <button
+                        key={tank.id}
+                        onClick={() => handleRefillTank(tank.id, 5000)}
+                        className="bg-red-700 hover:bg-red-800 text-white font-sans font-bold text-[10px] uppercase px-3 py-1.5 rounded transition-all shadow-sm cursor-pointer flex items-center gap-1 hover:scale-105 active:scale-95"
+                        title={`Suministrar 5,000 Galones a ${tank.name}`}
+                      >
+                        <RefreshCw className="w-3.5 h-3.5 text-white" />
+                        <span>Reabastecer {tank.name} (+5k Gal)</span>
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+            <InventoryTab
+              tanks={tanks}
+              onRefillTank={handleRefillTank}
+              onAddTank={handleAddTank}
+              setTanks={setTanks}
+            />
+          </div>
         );
 
       case 'users':
@@ -2233,6 +2964,8 @@ export default function App() {
         setIsSimulating={setIsSimulating}
         onManualSync={handleManualSync}
         pendingAutoConsolidationInfo={pendingAutoConsolidationInfo}
+        isApiOnline={isApiOnline}
+        isPts2Online={isPts2Online}
       />
 
       {/* Quick relevo switch PIN prompt overlay */}
@@ -2464,12 +3197,12 @@ export default function App() {
                                 <span className="text-[9px] text-slate-400 font-mono">{tx.dateTime}</span>
                               </div>
                               <div className="text-[11px] text-slate-300">
-                                Volumen: <strong className="font-mono text-white">{tx.volume.toFixed(2)} Gls</strong> | Combustible: <span className="text-indigo-300 font-medium">{fuelType === 'Regular Unleaded' ? 'Regular' : fuelType === 'Premium Unleaded' ? 'Súper' : 'Diesel'}</span>
+                                Volumen: <strong className="font-mono text-white">{tx.volume.toFixed(2)} {unitMeasure === 'Galones' ? 'Gls' : 'Lts'}</strong> | Combustible: <span className="text-indigo-300 font-medium">{fuelType === 'Regular Unleaded' ? 'Regular' : fuelType === 'Premium Unleaded' ? 'Súper' : 'Diesel'}</span>
                               </div>
                             </div>
 
                             <div className="text-right">
-                              <p className="text-xs font-black text-amber-400 font-mono">${tx.amount.toFixed(2)}</p>
+                              <p className="text-xs font-black text-amber-400 font-mono">{currencySymbol}{tx.amount.toFixed(2)}</p>
                               {(() => {
                                 const created = tx.createdAt || Date.now();
                                 const sLeft = Math.max(0, Math.ceil((300000 - (Date.now() - created)) / 1000));
@@ -2615,11 +3348,11 @@ export default function App() {
                           </div>
                           <div>
                             <span className="text-[9px] text-slate-500 block">Total Soles</span>
-                            <span className="font-bold text-amber-400 font-mono">${selectedNozzleTrx.amount.toFixed(2)}</span>
+                            <span className="font-bold text-amber-400 font-mono">{currencySymbol}{selectedNozzleTrx.amount.toFixed(2)}</span>
                           </div>
                           <div className="pt-1">
                             <span className="text-[9px] text-slate-500 block">Volumen</span>
-                            <span className="font-semibold text-slate-300 font-mono">{selectedNozzleTrx.volume.toFixed(2)} Gls</span>
+                            <span className="font-semibold text-slate-300 font-mono">{selectedNozzleTrx.volume.toFixed(2)} {unitMeasure === 'Galones' ? 'Gls' : 'Lts'}</span>
                           </div>
                           <div>
                             <span className="text-[9px] text-slate-500 block">Surtidor</span>
@@ -2863,21 +3596,27 @@ export default function App() {
                   Seleccionar Octanaje / Grado
                 </label>
                 <div className="grid grid-cols-3 gap-2">
-                  {prices.map(p => (
-                    <button
-                      key={p.fuelType}
-                      type="button"
-                      onClick={() => setPreauthFuelGrade(p.fuelType)}
-                      className={`py-2 px-1 text-center font-bold font-sans text-xs rounded border transition-all cursor-pointer ${
-                        preauthFuelGrade === p.fuelType
-                          ? 'bg-[#355e9e] border-[#93b9ff] text-white'
-                          : 'bg-[#133562]/30 border-[#133562] text-[#87a0cd] hover:border-[#355e9e]'
-                      }`}
-                    >
-                      <p className="truncate text-[11px] leading-tight">{p.fuelType.split(' ')[0]}</p>
-                      <span className="font-mono text-[10px] text-slate-300 block font-normal">${p.price.toFixed(2)}/G</span>
-                    </button>
-                  ))}
+                  {(() => {
+                    const currentDispenser = dispensers.find(d => d.id === preauthorizingPumpId);
+                    const allowedFuelTypes = currentDispenser ? currentDispenser.nozzles.map(n => n.fuelType) : [];
+                    return prices
+                      .filter(p => allowedFuelTypes.includes(p.fuelType))
+                      .map(p => (
+                        <button
+                          key={p.fuelType}
+                          type="button"
+                          onClick={() => setPreauthFuelGrade(p.fuelType)}
+                          className={`py-2 px-1 text-center font-bold font-sans text-xs rounded border transition-all cursor-pointer ${
+                            preauthFuelGrade === p.fuelType
+                              ? 'bg-[#355e9e] border-[#93b9ff] text-white'
+                              : 'bg-[#133562]/30 border-[#133562] text-[#87a0cd] hover:border-[#355e9e]'
+                          }`}
+                        >
+                          <p className="truncate text-[11px] leading-tight">{p.fuelType.split(' ')[0]}</p>
+                          <span className="font-mono text-[10px] text-slate-300 block font-normal">{currencySymbol}{p.price.toFixed(2)}/{unitMeasure === 'Galones' ? 'G' : 'L'}</span>
+                        </button>
+                      ));
+                  })()}
                 </div>
               </div>
 
@@ -2890,24 +3629,13 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setPreauthMode('Limit')}
-                    className={`py-2 text-center text-[11px] font-bold rounded border cursor-pointer ${
+                    className={`py-2 text-center text-xs font-bold rounded border cursor-pointer transition-all ${
                       preauthMode === 'Limit'
-                        ? 'bg-[#355e9e] border-[#93b9ff] text-white'
-                        : 'bg-slate-800/40 border-slate-700 text-[#87a0cd]'
+                        ? 'bg-[#355e9e] border-[#93b9ff] text-white shadow-lg shadow-[#355e9e]/30'
+                        : 'bg-slate-800/40 border-slate-700 text-[#87a0cd] hover:bg-slate-800/60'
                     }`}
                   >
                     💰 Prepago
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPreauthMode('Postpaid')}
-                    className={`py-2 text-center text-[11px] font-bold rounded border cursor-pointer ${
-                      preauthMode === 'Postpaid'
-                        ? 'bg-[#355e9e] border-[#93b9ff] text-white'
-                        : 'bg-slate-800/40 border-slate-700 text-[#87a0cd]'
-                    }`}
-                  >
-                    📂 Postpago
                   </button>
                   <button
                     type="button"
@@ -2915,59 +3643,86 @@ export default function App() {
                       setPreauthMode('Full');
                       setPreauthAmount('999'); // dummy full tank
                     }}
-                    className={`py-2 text-center text-[11px] font-bold rounded border cursor-pointer ${
+                    className={`py-2 text-center text-xs font-bold rounded border cursor-pointer transition-all ${
                       preauthMode === 'Full'
-                        ? 'bg-[#355e9e] border-[#93b9ff] text-white'
-                        : 'bg-slate-800/40 border-slate-700 text-[#87a0cd]'
+                        ? 'bg-[#355e9e] border-[#93b9ff] text-white shadow-lg shadow-[#355e9e]/30'
+                        : 'bg-slate-800/40 border-slate-700 text-[#87a0cd] hover:bg-slate-800/60'
                     }`}
                   >
-                    🚗 Llenado
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPreauthMode('LiftInmediate');
-                    }}
-                    className={`py-2 text-center text-[11px] font-bold rounded border cursor-pointer ${
-                      preauthMode === 'LiftInmediate'
-                        ? 'bg-[#355e9e] border-[#93b9ff] text-white'
-                        : 'bg-slate-800/40 border-slate-700 text-[#87a0cd]'
-                    }`}
-                  >
-                    ⚡ Descolgar e Iniciar
+                    🚗 Tanque Lleno
                   </button>
                 </div>
               </div>
 
-              {/* Selector 3: Amount config */}
+              {/* Selector 3: Amount or Volume config */}
               {preauthMode === 'Limit' && (
-                <div>
-                  <label className="block text-xs font-bold text-[#87a0cd] uppercase tracking-wider mb-2 font-sans">
-                    Importe Precargado ($)
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-2 text-[#87a0cd] font-mono text-sm">$</span>
-                    <input
-                      type="number"
-                      step="5"
-                      value={preauthAmount}
-                      onChange={(e) => setPreauthAmount(e.target.value)}
-                      className="w-full bg-[#1b365d]/50 border border-[#355e9e] rounded py-1.5 pl-7 pr-3 text-sm text-white font-mono focus:outline-none focus:ring-1 focus:ring-[#93b9ff]"
-                    />
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-bold text-[#87a0cd] uppercase tracking-wider mb-1.5 font-sans">
+                      Tipo de Límite
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPreauthLimitType('Amount');
+                          setPreauthAmount('20.00');
+                        }}
+                        className={`py-1.5 text-center text-[10px] font-bold rounded border cursor-pointer transition-all ${
+                          preauthLimitType === 'Amount'
+                            ? 'bg-[#355e9e] border-[#93b9ff] text-white'
+                            : 'bg-slate-800/40 border-slate-700 text-[#87a0cd]'
+                        }`}
+                      >
+                        💵 Por Monto ($)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPreauthLimitType('Volume');
+                          setPreauthAmount('5.00');
+                        }}
+                        className={`py-1.5 text-center text-[10px] font-bold rounded border cursor-pointer transition-all ${
+                          preauthLimitType === 'Volume'
+                            ? 'bg-[#355e9e] border-[#93b9ff] text-white'
+                            : 'bg-slate-800/40 border-slate-700 text-[#87a0cd]'
+                        }`}
+                      >
+                        🛢️ Por Volumen ({unitMeasure === 'Galones' ? 'GAL' : 'L'})
+                      </button>
+                    </div>
                   </div>
 
-                  {/* Quick select presets */}
-                  <div className="grid grid-cols-4 gap-2 mt-2">
-                    {['10.00', '20.00', '45.00', '60.00'].map(preset => (
-                      <button
-                        key={preset}
-                        type="button"
-                        onClick={() => setPreauthAmount(preset)}
-                        className="bg-[#2d3133] hover:bg-[#355e9e] font-mono text-xs rounded text-slate-300 hover:text-white py-1 cursor-pointer border border-[#44474e]/40"
-                      >
-                        ${preset}
-                      </button>
-                    ))}
+                  <div>
+                    <label className="block text-xs font-bold text-[#87a0cd] uppercase tracking-wider mb-2 font-sans">
+                      {preauthLimitType === 'Amount' ? 'Importe Precargado ($)' : `Volumen Precargado (${unitMeasure === 'Galones' ? 'GAL' : 'L'})`}
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2 text-[#87a0cd] font-mono text-sm">
+                        {preauthLimitType === 'Amount' ? '$' : (unitMeasure === 'Galones' ? 'G' : 'L')}
+                      </span>
+                      <input
+                        type="number"
+                        step={preauthLimitType === 'Amount' ? '5' : '1'}
+                        value={preauthAmount}
+                        onChange={(e) => setPreauthAmount(e.target.value)}
+                        className="w-full bg-[#1b365d]/50 border border-[#355e9e] rounded py-1.5 pl-7 pr-3 text-sm text-white font-mono focus:outline-none focus:ring-1 focus:ring-[#93b9ff]"
+                      />
+                    </div>
+
+                    {/* Quick select presets */}
+                    <div className="grid grid-cols-4 gap-2 mt-2">
+                      {(preauthLimitType === 'Amount' ? ['10.00', '20.00', '45.00', '60.00'] : ['2.00', '5.00', '10.00', '15.00']).map(preset => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => setPreauthAmount(preset)}
+                          className="bg-[#2d3133] hover:bg-[#355e9e] font-mono text-xs rounded text-slate-300 hover:text-white py-1 cursor-pointer border border-[#44474e]/40 transition-colors"
+                        >
+                          {preauthLimitType === 'Amount' ? `$${preset}` : `${preset} ${unitMeasure === 'Galones' ? 'G' : 'L'}`}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               )}
@@ -2976,25 +3731,7 @@ export default function App() {
                 <div className="p-3 rounded-lg bg-[#355e9e]/15 border border-[#355e9e]/30 flex gap-2 items-start text-xs text-[#87a0cd]">
                   <Info className="w-4 h-4 text-[#93b9ff] shrink-0 mt-0.5" />
                   <p>
-                    El dispensador fluirá hasta que el sensor de presión detecte estanque lleno. El total de galonaje se cobrará automáticamente al terminar.
-                  </p>
-                </div>
-              )}
-
-              {preauthMode === 'Postpaid' && (
-                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 flex gap-2 items-start text-xs text-amber-200">
-                  <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                  <p>
-                    Servicio Libre (Postpago). El combustible fluirá libremente y, al terminar, el dispensador quedará en estado <strong>Pendiente de Cobro</strong> hasta liquidarlo en caja.
-                  </p>
-                </div>
-              )}
-
-              {preauthMode === 'LiftInmediate' && (
-                <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex gap-2 items-start text-xs text-emerald-200">
-                  <Info className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                  <p>
-                    <strong>Auto-Descolgue Inmediato</strong>. Habilita el surtidor de modo que, al retirar la manguera, el despacho inicia de forma inmediata sin pasos secundarios.
+                    <strong>Tanque Lleno (Postpago)</strong>. El combustible fluirá libremente hasta detenerse. Al terminar, la transacción quedará <strong>Pendiente de Pago</strong> para ser cobrada en caja.
                   </p>
                 </div>
               )}
@@ -3177,19 +3914,19 @@ export default function App() {
               {/* Revenue list */}
               <div className="space-y-1.5 py-1.5 border-b border-dashed border-neutral-300">
                 <p className="font-bold text-slate-900 pb-1">VENTAS POR GRADO:</p>
-                <p className="flex justify-between"><span>Gasolina Regular:</span> <span>{transactions.filter(t => t.fuelType === 'Regular Unleaded').reduce((sum, t) => sum + t.volume, 0).toFixed(2)} Gal (${transactions.filter(t => t.fuelType === 'Regular Unleaded').reduce((sum, t) => sum + t.amount, 0).toFixed(2)})</span></p>
-                <p className="flex justify-between"><span>Gasolina Premium:</span> <span>{transactions.filter(t => t.fuelType === 'Premium Unleaded').reduce((sum, t) => sum + t.volume, 0).toFixed(2)} Gal (${transactions.filter(t => t.fuelType === 'Premium Unleaded').reduce((sum, t) => sum + t.amount, 0).toFixed(2)})</span></p>
-                <p className="flex justify-between"><span>Diesel Especial:</span> <span>{transactions.filter(t => t.fuelType === 'Diesel').reduce((sum, t) => sum + t.volume, 0).toFixed(2)} Gal (${transactions.filter(t => t.fuelType === 'Diesel').reduce((sum, t) => sum + t.amount, 0).toFixed(2)})</span></p>
+                <p className="flex justify-between"><span>Gasolina Regular:</span> <span>{transactions.filter(t => t.fuelType === 'Regular Unleaded').reduce((sum, t) => sum + t.volume, 0).toFixed(2)} {unitMeasure === 'Galones' ? 'Gal' : 'L'} ({currencySymbol}{transactions.filter(t => t.fuelType === 'Regular Unleaded').reduce((sum, t) => sum + t.amount, 0).toFixed(2)})</span></p>
+                <p className="flex justify-between"><span>Gasolina Premium:</span> <span>{transactions.filter(t => t.fuelType === 'Premium Unleaded').reduce((sum, t) => sum + t.volume, 0).toFixed(2)} {unitMeasure === 'Galones' ? 'Gal' : 'L'} ({currencySymbol}{transactions.filter(t => t.fuelType === 'Premium Unleaded').reduce((sum, t) => sum + t.amount, 0).toFixed(2)})</span></p>
+                <p className="flex justify-between"><span>Diesel Especial:</span> <span>{transactions.filter(t => t.fuelType === 'Diesel').reduce((sum, t) => sum + t.volume, 0).toFixed(2)} {unitMeasure === 'Galones' ? 'Gal' : 'L'} ({currencySymbol}{transactions.filter(t => t.fuelType === 'Diesel').reduce((sum, t) => sum + t.amount, 0).toFixed(2)})</span></p>
               </div>
 
               {/* Payments summary */}
               <div className="space-y-1.5 py-1.5 border-b border-dashed border-neutral-300">
                 <p className="font-bold text-slate-900 pb-1">MÉTODOS DE PAGO:</p>
-                <p className="flex justify-between"><span>Pago Tarjetas:</span> <span>${transactions.filter(t => t.paymentType !== 'Cash').reduce((sum, t) => sum + t.amount, 0).toFixed(2)}</span></p>
-                <p className="flex justify-between"><span>Pago Efectivo:</span> <span>${transactions.filter(t => t.paymentType === 'Cash').reduce((sum, t) => sum + t.amount, 0).toFixed(2)}</span></p>
+                <p className="flex justify-between"><span>Pago Tarjetas:</span> <span>{currencySymbol}{transactions.filter(t => t.paymentType !== 'Cash').reduce((sum, t) => sum + t.amount, 0).toFixed(2)}</span></p>
+                <p className="flex justify-between"><span>Pago Efectivo:</span> <span>{currencySymbol}{transactions.filter(t => t.paymentType === 'Cash').reduce((sum, t) => sum + t.amount, 0).toFixed(2)}</span></p>
                 <p className="text-sm font-bold text-slate-900 pt-1.5 border-t border-neutral-200 flex justify-between font-sans">
                   <span>TOTAL RECAUDADO:</span> 
-                  <span className="font-mono text-base font-extrabold text-[#1b365d]">${transactions.reduce((sum, t) => sum + t.amount, 0).toFixed(2)}</span>
+                  <span className="font-mono text-base font-extrabold text-[#1b365d]">{currencySymbol}{transactions.reduce((sum, t) => sum + t.amount, 0).toFixed(2)}</span>
                 </p>
               </div>
 

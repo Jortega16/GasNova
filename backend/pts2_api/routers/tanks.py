@@ -9,7 +9,7 @@ from pts2_sdk import PTS2Client
 from ..dependencies import get_pts2_client
 from sqlalchemy.orm import Session
 from ..database import get_db
-from ..models import InTankDelivery
+from ..models import InTankDelivery, TankConfiguration
 from ..schemas import CommandResponse, DeliveryCreate
 
 router = APIRouter(tags=["tanks"])
@@ -112,3 +112,41 @@ def create_delivery(
         "volume": delivery.volume,
         "delivery_date": delivery.delivery_date.isoformat(),
     })
+
+
+def seed_tanks_if_empty(db: Session) -> None:
+    """Prepopulate database with default tank configuration if empty."""
+    if db.query(TankConfiguration).count() == 0:
+        initial_tanks = [
+            TankConfiguration(tank_id=1, tank_name="Tanque 1", product_code="Regular Unleaded", capacity=100000.0, status="active"),
+            TankConfiguration(tank_id=2, tank_name="Tanque 2", product_code="Diesel", capacity=100000.0, status="active"),
+            TankConfiguration(tank_id=3, tank_name="Tanque 3", product_code="LPG", capacity=100000.0, status="active"),
+        ]
+        db.add_all(initial_tanks)
+        db.commit()
+
+
+@router.get(
+    "/tanks/db-configuration",
+    response_model=CommandResponse,
+    summary="Obtener configuración de tanques desde BD",
+    description="Retorna la lista de tanques configurados en la base de datos local y realiza la precarga inicial si está vacía.",
+)
+def get_tanks_db_configuration(db: Session = Depends(get_db)) -> CommandResponse:
+    """Obtiene la configuración de los tanques de la base de datos."""
+    seed_tanks_if_empty(db)
+    configs = db.query(TankConfiguration).order_by(TankConfiguration.tank_id).all()
+    serialized = [
+        {
+            "id": f"T-{str(c.tank_id).zfill(2)}",
+            "db_id": c.tank_id,
+            "name": c.tank_name,
+            "fuelType": c.product_code,
+            "maxCapacity": c.capacity,
+            "status": c.status,
+            "location": c.location,
+        }
+        for c in configs
+    ]
+    return CommandResponse(data=serialized)
+

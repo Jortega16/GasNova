@@ -5,8 +5,24 @@
 
 import React, { useState, useEffect } from 'react';
 import { Transaction, PaymentMethod, DispenserState, FuelType, NozzleState } from '../types';
-import { TrendingUp, CreditCard, HelpCircle, Star, ShieldCheck, Mail, ShieldAlert, Check, Terminal, Users, UserCheck, Plus, BarChart3, Database, Clock, DollarSign, Trash2, Edit2, Palette, Eye, Settings, RefreshCw, Printer, Scissors, FileText, Receipt, ChevronDown, ChevronUp, Save, Wifi, WifiOff } from 'lucide-react';
+import { TrendingUp, CreditCard, HelpCircle, Star, ShieldCheck, Mail, ShieldAlert, Check, Terminal, Users, UserCheck, Plus, BarChart3, Database, Clock, DollarSign, Trash2, Edit2, Palette, Eye, Settings, RefreshCw, Printer, Scissors, FileText, Receipt, ChevronDown, ChevronUp, Save, Wifi, WifiOff, Download } from 'lucide-react';
 import { api } from '../api';
+
+const getPrintApiBaseUrl = () => {
+  const envUrl = (import.meta as any).env.VITE_API_BASE_URL;
+  if (envUrl) {
+    if (typeof window !== 'undefined' && envUrl.includes('localhost')) {
+      return envUrl.replace('localhost', window.location.hostname);
+    }
+    return envUrl;
+  }
+  if (typeof window !== 'undefined') {
+    return `http://${window.location.hostname}:8002`;
+  }
+  return 'http://localhost:8002';
+};
+
+const PRINT_API_BASE_URL = getPrintApiBaseUrl();
 
 interface OtherTabsProps {
   tabId: string;
@@ -29,7 +45,8 @@ const fuelTypeTranslations: { [key: string]: string } = {
   'Regular Unleaded': 'Gasolina Regular',
   'Premium Unleaded': 'Gasolina Premium',
   'Diesel': 'Diesel',
-  'Kerosene': 'Queroseno'
+  'Kerosene': 'Queroseno',
+  'LPG': 'LPG'
 };
 
 const paymentTranslations: { [key: string]: string } = {
@@ -68,9 +85,10 @@ export default function OtherTabs({
   // States for TPV, API, and WebSocket connection parameters in Settings view
   const [tpvId, setTpvId] = useState('TPV-ESTACION-01');
   const [tpvLocation, setTpvLocation] = useState('Isla Principal');
-  const [apiEndpoint, setApiEndpoint] = useState('https://api.gasnova.com/v1');
+  const [apiEndpoint, setApiEndpoint] = useState('https://api.gasnova.site/v1');
   const [apiToken, setApiToken] = useState('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
   const [wsEndpoint, setWsEndpoint] = useState('wss://stream.gasnova.com/events');
+  const [pts2Host, setPts2Host] = useState('192.168.50.117');
   const [isTestingApi, setIsTestingApi] = useState(false);
   const [isTestingWs, setIsTestingWs] = useState(false);
 
@@ -117,7 +135,7 @@ export default function OtherTabs({
   const [printerTestOk, setPrinterTestOk]   = useState<boolean | null>(null);
 
   // ── Station settings state ────────────────────────────────────────────────
-  const [unitMeasure, setUnitMeasure] = useState('Galones');
+  const [unitMeasure, setUnitMeasure] = useState('Litros');
   const [currencySymbol, setCurrencySymbol] = useState('$');
   const [stationCountry, setStationCountry] = useState('Guatemala');
   const [stationCity, setStationCity] = useState('Ciudad de Guatemala');
@@ -125,6 +143,14 @@ export default function OtherTabs({
   const [stationDepartment, setStationDepartment] = useState('Guatemala');
   const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
   const [selectedPrinter, setSelectedPrinter]     = useState('');
+
+  // States for Closed Shifts filtering
+  const [shiftsHistory, setShiftsHistory] = useState<any[]>([]);
+  const [selectedShiftFilter, setSelectedShiftFilter] = useState<string>('');
+  const [shiftTrxList, setShiftTrxList] = useState<Transaction[]>([]);
+  const [loadingTrxs, setLoadingTrxs] = useState(false);
+  const [trxSearchQuery, setTrxSearchQuery] = useState('');
+  const [trxDateFilter, setTrxDateFilter] = useState('');
 
   // Config fields (loaded from backend on mount)
   const [pStationName,    setPStationName]    = useState('GASNOVA OUTLET');
@@ -145,7 +171,7 @@ export default function OtherTabs({
 
   useEffect(() => {
     // Load printer config from backend
-    fetch('http://localhost:8000/print/status')
+    fetch(`${PRINT_API_BASE_URL}/print/status`)
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!data) return;
@@ -157,7 +183,7 @@ export default function OtherTabs({
       })
       .catch(() => setPrinterStatus('error'));
 
-    fetch('http://localhost:8000/print/config')
+    fetch(`${PRINT_API_BASE_URL}/print/config`)
       .then(r => r.ok ? r.json() : null)
       .then(cfg => {
         if (!cfg) return;
@@ -180,10 +206,9 @@ export default function OtherTabs({
       .catch(() => {});
 
     // Load system settings
-    fetch('http://localhost:8000/settings')
-      .then(r => r.ok ? r.json() : null)
+    api.getSystemSettings()
       .then(res => {
-        if (!res || !res.data) return;
+        if (!res || !res.ok || !res.data) return;
         const data = res.data;
         if (data.unit_measure) setUnitMeasure(data.unit_measure);
         if (data.currency_symbol) setCurrencySymbol(data.currency_symbol);
@@ -191,14 +216,46 @@ export default function OtherTabs({
         if (data.station_city) setStationCity(data.station_city);
         if (data.station_canton !== undefined) setStationCanton(data.station_canton);
         if (data.station_department) setStationDepartment(data.station_department);
+        if (data.pts2_host) setPts2Host(data.pts2_host);
+        if (data.remote_api_url) setApiEndpoint(data.remote_api_url);
+      })
+      .catch(() => {});
+
+    // Load closed shifts history
+    api.getShifts()
+      .then(res => {
+        if (res && res.ok && res.data) {
+          setShiftsHistory(res.data);
+        }
       })
       .catch(() => {});
   }, []);
 
+  // Update selected shift transactions dynamically
+  useEffect(() => {
+    if (!selectedShiftFilter) {
+      setShiftTrxList(transactions);
+      return;
+    }
+    setLoadingTrxs(true);
+    api.getShiftTransactions(selectedShiftFilter)
+      .then(res => {
+        if (res && res.ok && res.data) {
+          setShiftTrxList(res.data);
+        } else {
+          setShiftTrxList([]);
+        }
+      })
+      .catch(() => {
+        setShiftTrxList([]);
+      })
+      .finally(() => setLoadingTrxs(false));
+  }, [selectedShiftFilter, transactions]);
+
   const handleSavePrinterConfig = async () => {
     setPrinterSaving(true);
     try {
-      await fetch('http://localhost:8000/print/config', {
+      await fetch(`${PRINT_API_BASE_URL}/print/config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -251,19 +308,36 @@ export default function OtherTabs({
     }
   };
 
+  const handleSaveConnectionSettings = async () => {
+    setPrinterSaving(true);
+    try {
+      await api.updateSystemSetting('pts2_host', pts2Host);
+      await api.updateSystemSetting('remote_api_url', apiEndpoint);
+      setPrinterSaved(true);
+      setTimeout(() => setPrinterSaved(false), 3000);
+      if (onSettingsChange) {
+        onSettingsChange();
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setPrinterSaving(false);
+    }
+  };
+
   const handleTestPrint = async () => {
     setPrinterTesting(true);
     setPrinterTestOk(null);
     try {
       // Primero actualizar la impresora seleccionada en el backend
       if (selectedPrinter) {
-        await fetch('http://localhost:8000/print/config', {
+        await fetch(`${PRINT_API_BASE_URL}/print/config`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ printer_name: selectedPrinter }),
         });
       }
-      const res = await fetch('http://localhost:8000/print/test', { method: 'POST' });
+      const res = await fetch(`${PRINT_API_BASE_URL}/print/test`, { method: 'POST' });
       const data = await res.json();
       setPrinterTestOk(data.ok === true);
     } catch { setPrinterTestOk(false); }
@@ -272,24 +346,98 @@ export default function OtherTabs({
 
   // Render selector depending on active tab ID
   switch (tabId) {
-    case 'transactions':
+    case 'transactions': {
+      const displayedTransactions = shiftTrxList.filter(t => {
+        // 1. Date filter
+        if (trxDateFilter) {
+          if (!t.dateTime.startsWith(trxDateFilter)) {
+            return false;
+          }
+        }
+        // 2. Search query filter
+        if (trxSearchQuery.trim()) {
+          const q = trxSearchQuery.toLowerCase();
+          const matchId = t.id.toLowerCase().includes(q);
+          const matchPump = t.pumpName.toLowerCase().includes(q);
+          const matchFuel = (fuelTypeTranslations[t.fuelType] || t.fuelType).toLowerCase().includes(q);
+          const matchPayment = (paymentTranslations[t.paymentType] || t.paymentType).toLowerCase().includes(q);
+          if (!matchId && !matchPump && !matchFuel && !matchPayment) {
+            return false;
+          }
+        }
+        return true;
+      });
+
       return (
         <div className="bg-white rounded-xl shadow border border-neutral-300 p-6 space-y-6" id="daily-sales-history-view">
-          <div className="border-b border-neutral-200 pb-3 flex items-center justify-between flex-wrap gap-2">
+          <div className="border-b border-neutral-200 pb-3 flex flex-wrap gap-4 items-center justify-between">
             <div>
               <h2 className="font-sans font-bold text-lg text-slate-800 flex items-center gap-2">
                 <TrendingUp className="w-5 h-5 text-[#355e9e]" />
-                Historial Exhaustivo de Ventas Diarias
+                Historial de Ventas Diarias por Turno
               </h2>
-              <p className="text-xs text-slate-500 mt-1">Busque, filtre y analice todas las ventas de combustible en este turno.</p>
+              <p className="text-xs text-slate-500 mt-1">Consulte el historial de ventas del turno actual o de turnos anteriores cerrados.</p>
             </div>
             
-            <span className="text-xs font-mono font-bold bg-[#1b365d] text-white px-3 py-1 rounded">
-              Total Ventas: {transactions.length} | Suma: ${transactions.reduce((s,t) => s+t.amount, 0).toFixed(2)}
-            </span>
+            <div className="flex flex-wrap gap-2 items-center">
+              <span className="text-xs font-mono font-bold bg-[#355e9e] text-white px-3 py-1 rounded-full shadow-sm">
+                {displayedTransactions.length} {displayedTransactions.length === 1 ? 'Transacción' : 'Transacciones'}
+              </span>
+              <span className="text-xs font-mono font-bold bg-[#1b365d] text-white px-3 py-1 rounded-full shadow-sm">
+                Total Recaudado: ${displayedTransactions.reduce((s,t) => s+t.amount, 0).toFixed(2)}
+              </span>
+            </div>
           </div>
 
-          <div className="overflow-x-auto">
+          {/* Filtros de Búsqueda, Turno y Día */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-slate-50 p-4 rounded-xl border border-neutral-200">
+            {/* Selector de Turno */}
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Turno</label>
+              <select
+                value={selectedShiftFilter}
+                onChange={e => setSelectedShiftFilter(e.target.value)}
+                className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none bg-white cursor-pointer font-bold"
+              >
+                <option value="">-- Turno Activo (Actual) --</option>
+                {shiftsHistory.map(s => (
+                  <option key={s.shift_id} value={s.shift_id}>
+                    {s.shift_id} - {s.operator_name} ({s.status === 'Active' ? 'Activo' : 'Cerrado'})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Selector por Día */}
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Filtrar por Día</label>
+              <input
+                type="date"
+                value={trxDateFilter}
+                onChange={e => setTrxDateFilter(e.target.value)}
+                className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none bg-white cursor-pointer"
+              />
+            </div>
+
+            {/* Búsqueda de Texto */}
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Buscar Transacción</label>
+              <input
+                type="text"
+                value={trxSearchQuery}
+                onChange={e => setTrxSearchQuery(e.target.value)}
+                placeholder="Ej: TRX-20, Cara 1, Efectivo, Regular..."
+                className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none bg-white"
+              />
+            </div>
+          </div>
+
+          <div className="overflow-x-auto relative">
+            {loadingTrxs && (
+              <div className="absolute inset-0 bg-white/70 flex items-center justify-center z-10">
+                <span className="text-xs font-sans font-bold text-slate-600 animate-pulse">Cargando transacciones del turno...</span>
+              </div>
+            )}
             <table className="w-full text-left text-sm border-collapse" id="exhaustive-transactions-table">
               <thead>
                 <tr className="bg-slate-100 text-xs font-sans font-bold border-b border-neutral-200 text-slate-700 uppercase tracking-wider">
@@ -297,34 +445,43 @@ export default function OtherTabs({
                   <th className="px-4 py-3">Fecha y Hora</th>
                   <th className="px-4 py-3">Dispensador</th>
                   <th className="px-4 py-3">Grado Combustible</th>
-                  <th className="px-4 py-3 text-right">Volumen (Gal)</th>
+                  <th className="px-4 py-3 text-right">Volumen ({unitMeasure === 'Galones' ? 'Gal' : 'L'})</th>
                   <th className="px-4 py-3 text-right">Importe Cobrado</th>
                   <th className="px-4 py-3 text-right">Método de Pago</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-200 font-sans">
-                {transactions.map((t) => (
-                  <tr key={t.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-4 py-3 font-mono text-xs font-bold text-slate-600">{t.id}</td>
-                    <td className="px-4 py-3 text-xs text-slate-500">{t.dateTime}</td>
-                    <td className="px-4 py-3 text-xs font-mono text-slate-800 font-bold">{t.pumpName}</td>
-                    <td className="px-4 py-3 font-semibold text-slate-800">{fuelTypeTranslations[t.fuelType] || t.fuelType}</td>
-                    <td className="px-4 py-3 text-right font-mono font-medium text-slate-600">{t.volume.toFixed(2)} G</td>
-                    <td className="px-4 py-3 text-right font-mono font-bold text-slate-900">${t.amount.toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right text-xs">
-                      <span className={`px-2 py-0.5 rounded font-mono font-bold ${
-                        t.paymentType === 'Cash' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'
-                      }`}>
-                        {paymentTranslations[t.paymentType] || t.paymentType}
-                      </span>
+                {displayedTransactions.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-8 text-center text-xs font-bold text-red-500 bg-red-50/30">
+                      ⚠ Turno sin transacciones.
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  displayedTransactions.map((t) => (
+                    <tr key={t.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="px-4 py-3 font-mono text-xs font-bold text-slate-600">{t.id}</td>
+                      <td className="px-4 py-3 text-xs text-slate-500">{t.dateTime}</td>
+                      <td className="px-4 py-3 text-xs font-mono text-slate-800 font-bold">{t.pumpName}</td>
+                      <td className="px-4 py-3 font-semibold text-slate-800">{fuelTypeTranslations[t.fuelType] || t.fuelType}</td>
+                      <td className="px-4 py-3 text-right font-mono font-medium text-slate-600">{t.volume.toFixed(2)} {unitMeasure === 'Galones' ? 'G' : 'L'}</td>
+                      <td className="px-4 py-3 text-right font-mono font-bold text-slate-900">${t.amount.toFixed(2)}</td>
+                      <td className="px-4 py-3 text-right text-xs">
+                        <span className={`px-2 py-0.5 rounded font-mono font-bold ${
+                          t.paymentType === 'Cash' ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'
+                        }`}>
+                          {paymentTranslations[t.paymentType] || t.paymentType}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
         </div>
       );
+    }
 
     case 'monthlySummary':
       return (
@@ -709,26 +866,39 @@ export default function OtherTabs({
                 </h3>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Dropdown */}
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
-                      Impresora activa
-                    </label>
-                    <select
-                      value={selectedPrinter}
-                      onChange={e => setSelectedPrinter(e.target.value)}
-                      className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-xs font-mono text-slate-800 focus:outline-none focus:border-indigo-400 bg-slate-50 cursor-pointer"
-                    >
-                      {availablePrinters.length === 0 && (
-                        <option value="">Cargando impresoras...</option>
-                      )}
-                      {availablePrinters.map(p => (
-                        <option key={p} value={p}>{p}</option>
-                      ))}
-                    </select>
-                    <p className="text-[9px] text-slate-400 mt-1">
-                      Impresoras detectadas en el sistema macOS (CUPS).
-                    </p>
+                  {/* Dropdown / Manual Input */}
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                        Seleccionar Impresora Detectada
+                      </label>
+                      <select
+                        value={selectedPrinter}
+                        onChange={e => setSelectedPrinter(e.target.value)}
+                        className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-xs font-mono text-slate-800 focus:outline-none focus:border-indigo-400 bg-slate-50 cursor-pointer"
+                      >
+                        <option value="">-- Seleccione una impresora local --</option>
+                        {availablePrinters.map(p => (
+                          <option key={p} value={p}>{p}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                        Nombre Manual o IP de Red (TCP/IP)
+                      </label>
+                      <input
+                        type="text"
+                        value={selectedPrinter}
+                        onChange={e => setSelectedPrinter(e.target.value)}
+                        placeholder="Ej: 192.168.1.100 o Printer_POS-80"
+                        className="w-full border border-neutral-300 rounded-lg px-3 py-2 text-xs font-mono text-slate-800 focus:outline-none focus:border-indigo-400 bg-slate-50"
+                      />
+                      <p className="text-[9px] text-slate-400 mt-1">
+                        Puedes seleccionar una de la lista o ingresar manualmente un nombre o una dirección IP de red.
+                      </p>
+                    </div>
                   </div>
 
                   {/* Status + test button */}
@@ -932,6 +1102,36 @@ export default function OtherTabs({
                         <span className="text-xs text-slate-600 font-bold">%</span>
                       </div>
                     )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Guía de Configuración e Impresión (Windows / Docker / USB) */}
+              <div className="bg-slate-50 border border-slate-300 rounded-xl p-5 space-y-4">
+                <h3 className="font-sans font-bold text-sm text-slate-800 flex items-center gap-2 border-b pb-2">
+                  <HelpCircle className="w-4 h-4 text-[#355e9e]" />
+                  Guía de Configuración de Impresión (Windows / Docker / USB)
+                </h3>
+                <div className="text-xs text-slate-700 space-y-3 leading-relaxed">
+                  <div className="bg-white border border-slate-200 rounded-lg p-3">
+                    <span className="font-bold text-[#1b365d] block mb-1">💻 Impresora USB corriendo en Windows NATIVO:</span>
+                    <p className="text-[11px] mb-2">
+                      Si necesitas usar el POS con una impresora local conectada por USB en Windows, puedes iniciar la API de forma nativa para que tenga acceso completo al Spooler de Windows.
+                    </p>
+                    <a
+                      href={`${PRINT_API_BASE_URL}/print/download-bat`}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#1b365d] hover:bg-[#355e9e] text-white text-xs font-bold rounded transition-colors"
+                      download
+                    >
+                      <Download className="w-3.5 h-3.5" /> Descargar script run_backend.bat
+                    </a>
+                  </div>
+                  
+                  <div className="bg-white border border-slate-200 rounded-lg p-3">
+                    <span className="font-bold text-[#1b365d] block mb-1">🐳 Impresora de Red (TCP/IP) con Docker o Servidores:</span>
+                    <p className="text-[11px]">
+                      Si estás corriendo GasNova en Docker y tienes una impresora conectada a la red local, simplemente ingresa la dirección IP en el campo de texto de "Nombre Manual o IP de Red" arriba (ej: <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[10px]">192.168.1.100</code> o <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[10px]">192.168.1.100:9100</code>). El backend se comunicará directamente con ella.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -1201,6 +1401,16 @@ export default function OtherTabs({
                     />
                   </div>
                   <div>
+                    <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">IP DEL CONTROLADOR PTS-2</label>
+                    <input
+                      type="text"
+                      value={pts2Host}
+                      onChange={(e) => setPts2Host(e.target.value)}
+                      placeholder="192.168.50.117"
+                      className="w-full bg-white border border-neutral-300 rounded px-2.5 py-1.5 text-xs text-slate-800 font-mono focus:outline-none focus:border-[#355e9e]"
+                    />
+                  </div>
+                  <div>
                     <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">ESTADO DE CANAL DE EVENTOS</label>
                     <div className="flex items-center gap-1.5 py-1 px-2.5 rounded bg-emerald-50 border border-emerald-200 w-fit">
                       <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
@@ -1226,6 +1436,24 @@ export default function OtherTabs({
                 </div>
               </div>
 
+            </div>
+
+            {/* Save Connection parameters button */}
+            <div className="border-t border-slate-200 pt-4 flex items-center justify-end gap-3">
+              {printerSaved && (
+                <span className="text-green-700 text-xs font-bold flex items-center gap-1">
+                  <Check className="w-3.5 h-3.5" /> Conexión guardada
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={handleSaveConnectionSettings}
+                disabled={printerSaving}
+                className="px-5 py-2 bg-[#1b365d] hover:bg-[#2a4f8f] text-white text-sm font-bold rounded-xl flex items-center gap-2 cursor-pointer disabled:opacity-60 transition-all font-sans"
+              >
+                <Save className="w-4 h-4" />
+                {printerSaving ? 'Guardando...' : 'Guardar Parámetros de Conexión'}
+              </button>
             </div>
           </div>
 
@@ -1722,6 +1950,17 @@ export default function OtherTabs({
         </div>
       );
     }
+
+    case 'pts2RawApi':
+      return (
+        <div className="w-full h-[85vh] bg-slate-900 rounded-xl overflow-hidden shadow-lg border border-slate-700/50">
+          <iframe 
+            src="/pts2-api/index.html" 
+            className="w-full h-full border-0" 
+            title="PTS-2 Raw JavaScript API"
+          />
+        </div>
+      );
 
     case 'help':
     default:

@@ -20,9 +20,15 @@ class ProbesAPI:
         return ProbeMeasurement.model_validate(data or {"Probe": probe_id})
 
     def get_all_measurements(self) -> list[ProbeMeasurement]:
-        data = self._client.request_data("ProbeGetMeasurements")
-        records = self._extract_records(data, ("Measurements", "Probes", "Records"))
-        return [ProbeMeasurement.model_validate(record) for record in records]
+        measurements = []
+        for probe_id in range(1, 5):
+            try:
+                meas = self.get_measurements(probe_id)
+                if meas and meas.product_volume is not None:
+                    measurements.append(meas)
+            except Exception:
+                continue
+        return measurements
 
     def get_tank_volume_for_height(self, tank_id: int, height: float) -> Any:
         return self._client.request_data("ProbeGetTankVolumeForHeight", {"Tank": tank_id, "Height": height})

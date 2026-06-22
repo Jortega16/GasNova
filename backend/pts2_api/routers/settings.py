@@ -19,12 +19,14 @@ class SettingUpdate(BaseModel):
 
 
 DEFAULT_SETTINGS = {
-    "unit_measure": "Galones",
+    "unit_measure": "Litros",
     "currency_symbol": "$",
     "station_country": "Guatemala",
     "station_city": "Ciudad de Guatemala",
     "station_canton": "",
-    "station_department": "Guatemala"
+    "station_department": "Guatemala",
+    "pts2_host": "192.168.50.117",
+    "remote_api_url": "https://api.gasnova.site/v1"
 }
 
 

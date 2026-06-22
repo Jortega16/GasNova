@@ -17,6 +17,8 @@ services:
 
   pts2-sdk:
     build: .
+    environment:
+      - DATABASE_URL=postgresql://gasnova:gasnova_secret@postgres:5432/gasnovalocal
     env_file:
       - .env
     ports:
@@ -24,6 +26,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./reports:/app/reports
+      - /private/var/run/cupsd:/var/run/cups/cups.sock
     depends_on:
       postgres:
         condition: service_healthy

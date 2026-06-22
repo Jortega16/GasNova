@@ -3,16 +3,26 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { Transaction } from '../types';
 import { CreditCard, Coins, Key, History, TrendingUp, Fuel } from 'lucide-react';
 
 interface RecentTransactionsProps {
   transactions: Transaction[];
   searchQuery: string;
+  currencySymbol?: string;
+  unitMeasure?: 'Galones' | 'Litros';
 }
 
-export default function RecentTransactions({ transactions, searchQuery }: RecentTransactionsProps) {
+export default function RecentTransactions({
+  transactions,
+  searchQuery,
+  currencySymbol = '$',
+  unitMeasure = 'Litros'
+}: RecentTransactionsProps) {
+
+  const [localSearch, setLocalSearch] = useState('');
+  const [selectedPump, setSelectedPump] = useState<string>('all');
 
   const getPaymentConfig = (type: string) => {
     const t = type.toLowerCase();
@@ -39,15 +49,33 @@ export default function RecentTransactions({ transactions, searchQuery }: Recent
   };
 
   const filtered = transactions.filter((t) => {
-    if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      t.pumpName.toLowerCase().includes(q) ||
-      t.fuelType.toLowerCase().includes(q) ||
-      t.paymentType.toLowerCase().includes(q) ||
-      t.id.toLowerCase().includes(q) ||
-      t.amount.toString().includes(q)
+    // Combine general search query from header and localSearch from sidebar
+    const qHeader = searchQuery.toLowerCase();
+    const qLocal = localSearch.toLowerCase();
+    
+    // Check pump selection filter
+    if (selectedPump !== 'all') {
+      const tPump = t.pumpName.replace('Cara ', 'C').toLowerCase();
+      if (tPump !== selectedPump.toLowerCase()) return false;
+    }
+
+    const matchesHeader = !searchQuery || (
+      t.pumpName.toLowerCase().includes(qHeader) ||
+      t.fuelType.toLowerCase().includes(qHeader) ||
+      t.paymentType.toLowerCase().includes(qHeader) ||
+      t.id.toLowerCase().includes(qHeader) ||
+      t.amount.toString().includes(qHeader)
     );
+
+    const matchesLocal = !localSearch || (
+      t.pumpName.toLowerCase().includes(qLocal) ||
+      t.fuelType.toLowerCase().includes(qLocal) ||
+      t.paymentType.toLowerCase().includes(qLocal) ||
+      t.id.toLowerCase().includes(qLocal) ||
+      t.amount.toString().includes(qLocal)
+    );
+
+    return matchesHeader && matchesLocal;
   });
 
   const totalAmount = filtered.reduce((sum, item) => sum + item.amount, 0);
@@ -74,17 +102,55 @@ export default function RecentTransactions({ transactions, searchQuery }: Recent
         </div>
       </div>
 
+      {/* Local Filter UI */}
+      <div className="px-3 py-2 border-b border-slate-800/60 bg-slate-900/30 space-y-2">
+        <input
+          type="text"
+          value={localSearch}
+          onChange={(e) => setLocalSearch(e.target.value)}
+          placeholder="Filtrar ventas (bomba, pago, monto)..."
+          className="w-full bg-slate-950/40 border border-slate-700/50 rounded-lg px-2.5 py-1 text-[10px] text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/50 font-sans"
+        />
+        
+        {/* Quick Pump Selection Pills */}
+        <div className="flex gap-1 overflow-x-auto pb-0.5 scrollbar-thin text-[9px] font-sans">
+          <button
+            onClick={() => setSelectedPump('all')}
+            className={`px-2 py-0.5 rounded-full border transition-all cursor-pointer ${
+              selectedPump === 'all'
+                ? 'bg-blue-600/20 border-blue-500 text-blue-300'
+                : 'bg-slate-800/40 border-slate-700 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Todas
+          </button>
+          {['C1', 'C2', 'C3', 'C4'].map(pump => (
+            <button
+              key={pump}
+              onClick={() => setSelectedPump(pump)}
+              className={`px-2.5 py-0.5 rounded-full border transition-all cursor-pointer ${
+                selectedPump === pump
+                  ? 'bg-blue-600/20 border-blue-500 text-blue-300'
+                  : 'bg-slate-800/40 border-slate-700 text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {pump}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Column headers */}
       <div className="grid grid-cols-12 gap-1 px-3 py-2 bg-slate-900/60 text-[9px] font-mono text-slate-500 uppercase tracking-widest border-b border-slate-800/60">
         <span className="col-span-3 text-left">Hora</span>
         <span className="col-span-2 text-center">Bomba</span>
-        <span className="col-span-2 text-right">Gal</span>
+        <span className="col-span-2 text-right">{unitMeasure === 'Galones' ? 'Gal' : 'L'}</span>
         <span className="col-span-2 text-right">Monto</span>
         <span className="col-span-3 text-right">Pago</span>
       </div>
 
-      {/* Scrollable list */}
-      <div className="flex-1 overflow-y-auto divide-y divide-slate-800/40 max-h-[520px]">
+      {/* Scrollable list (Expanded height to fill the sidebar space) */}
+      <div className="flex-1 overflow-y-auto divide-y divide-slate-800/40 min-h-[580px] max-h-[640px]">
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 px-4 text-center gap-3">
             <div className="p-4 rounded-2xl bg-slate-800/50 border border-slate-700/30">
@@ -127,7 +193,7 @@ export default function RecentTransactions({ transactions, searchQuery }: Recent
 
                 {/* Amount */}
                 <div className="col-span-2 text-right font-bold text-white font-mono text-[10px]">
-                  ${trx.amount.toFixed(2)}
+                  {currencySymbol}{trx.amount.toFixed(2)}
                 </div>
 
                 {/* Payment */}
@@ -152,16 +218,16 @@ export default function RecentTransactions({ transactions, searchQuery }: Recent
               <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest">Total Vendido</span>
             </div>
             <span className="text-sm font-extrabold text-white font-mono">
-              ${totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {currencySymbol}{totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </span>
           </div>
           <div className="bg-slate-800/60 border border-slate-700/40 rounded-xl px-3 py-2">
             <div className="flex items-center gap-1.5 mb-1">
               <Fuel className="w-3 h-3 text-slate-400" />
-              <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest">Total Galones</span>
+              <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest">Total {unitMeasure === 'Galones' ? 'Galones' : 'Litros'}</span>
             </div>
             <span className="text-sm font-extrabold text-slate-200 font-mono">
-              {totalVolume.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} G
+              {totalVolume.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} {unitMeasure === 'Galones' ? 'G' : 'L'}
             </span>
           </div>
         </div>

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Shift, PumpTransaction
+from ..models import Shift, PumpTransaction, SystemSetting
 from ..schemas import CommandResponse, ShiftCreate, ShiftResponse
 
 router = APIRouter(prefix="/shifts", tags=["shifts"])
@@ -109,8 +109,12 @@ def close_shift(request: ShiftCreate, db: Session = Depends(get_db)) -> CommandR
 
 @router.get("/{shift_id}/transactions", response_model=CommandResponse, summary="List transactions for a shift")
 def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> CommandResponse:
-    """Get the list of transactions associated with a specific shift, converting units to Gallons for frontend."""
+    """Get the list of transactions associated with a specific shift, converting units conditionally."""
     transactions = db.query(PumpTransaction).filter(PumpTransaction.shift_id == shift_id).all()
+    
+    # Check unit_measure setting
+    unit_setting = db.query(SystemSetting).filter(SystemSetting.key == "unit_measure").first()
+    unit_measure = unit_setting.value if unit_setting else "Litros"
     
     fuel_grades = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene']
     
@@ -119,8 +123,10 @@ def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> Com
         nozzle = t.nozzle or 1
         fuel_type = fuel_grades[nozzle - 1] if 1 <= nozzle <= len(fuel_grades) else 'Regular Unleaded'
         
-        # Convert volume from liters back to gallons (3.78541 liters = 1 gallon)
-        volume_gal = (t.volume or 0.0) / 3.78541
+        # Convert volume from liters back to gallons only if unit_measure is set to Galones
+        volume_val = t.volume or 0.0
+        if unit_measure == "Galones":
+            volume_val = volume_val / 3.78541
         
         # Format date time
         date_str = t.created_at.strftime("%Y-%m-%d %I:%M %p") if t.created_at else "N/A"
@@ -130,7 +136,7 @@ def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> Com
             "dateTime": date_str,
             "pumpId": t.pump_id,
             "pumpName": f"Cara {t.pump_id}",
-            "volume": round(volume_gal, 2),
+            "volume": round(volume_val, 2),
             "amount": round(t.amount or 0.0, 2),
             "fuelType": fuel_type,
             "paymentType": t.payment_type or "Cash"

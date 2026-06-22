@@ -1,0 +1,42 @@
+<div class="form-group w-100">
+    <div class="col-sm-6 offset-sm-3">
+        <input id="rpGenerateReportTanksButton" type="button" class="btn btn-dark btn-block systemButton" value=""></input>
+    </div>
+</div>
+
+<div id="trpTankTable" class="form-group w-100 pt-3 d-none">
+    <div class="form-group row">
+        <div class="col">
+            <fieldset class="border shadow-sm p-2 infoFieldset bg-light fieldset-border">
+                <legend class="w-auto" id="trpTankMeasurementsReportHeader"></legend>
+                <table id="trpTank" class="display w-100">
+                    <thead>
+                        <tr>
+                            <th class="text-center">#</th>
+                            <th class="text-center trpDateTimeLabel"></th>
+                            <th class="text-center trpDirectionLabel"></th>
+                            <th class="text-center trpProductHeightLabel"></th>
+                            <th class="text-center trpWaterHeightLabel"></th>
+                            <th class="text-center trpTemperatureLabel"></th>
+                            <th class="text-center trpProductVolumeLabel"></th>
+                            <th class="text-center trpWaterVolumeLabel"></th>
+                            <th class="text-center trpUllageLabel"></th>
+                            <th class="text-center trpTCVolumeLabel"></th>
+                            <th class="text-center trpDensityLabel"></th>
+                            <th class="text-center trpMassLabel"></th>
+                        </tr>
+                    </thead>
+                </table>
+            </fieldset>
+        </div>
+    </div>
+</div>
+
+<fieldset id="trpTankMeasurementsChart" class="border shadow-sm p-2 infoFieldset bg-light text-center fieldset-border w-100 pt-4 d-none">
+    <legend class="w-auto text-center" id="trpTankMeasurementsChartHeader"></legend>
+    <div id="trpChart" class="display w-100"></div>
+    <div id="trpTip" style="position:absolute; background:white; border:solid 1px black; border-radius:5px; padding:5px; text-align:left; opacity:0.9; display:none; text-align:center; font-size:small;"></div>
+</div>
+
+
+<script src="js/TanksReportingPage.js" type="text/javascript"></script>

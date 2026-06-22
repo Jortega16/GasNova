@@ -1,0 +1,85 @@
+<!-- Breadcrumbs-->
+<ol class="breadcrumb">
+    <li class="active w-100">
+        <i class="fas fa-gas-pump"></i>
+        <span class="pcpPumpsControlLabel"></span>
+
+        <div id="pcpView" class="dropdown float-right d-none">
+            <button class="btn btn-info dropdown-toggle btn-sm pt-0 pb-0" type="button" id="pcpViewMenu" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                <span class="pcpSelectViewLabel"></span>
+            </button>
+            <div class="dropdown-menu dropdown-menu-right border border-info" aria-labelledby="pcpViewMenu">
+                <button class="dropdown-item pcpViewWidgets pcpDisplayAsWidgetsLabel" type="button" active></button>
+                <button class="dropdown-item pcpViewTable pcpDisplayAsTableLabel" type="button"></button>
+            </div>
+        </div>
+    </li>
+</ol>
+
+<div class="clearfix"></div>
+
+<!-- No pumps are configured -->
+<div id="pcpNoPumps" class="text-center row w-100 d-none">
+    <h1 class="m-5 w-100">
+        <i class="fas fa-gas-pump"></i>
+        <span class="pcpNoPumpsConfiguredLabel"></span>
+    </h1>
+</div>
+
+<div id="pcpContent"></div>
+
+<script>
+
+    // Localization
+    $(".pcpPumpsControlLabel").text(localizeString("TAB_PUMPS_CONTROL"));
+    $(".pcpSelectViewLabel").text(localizeString("SELECT_VIEW"));
+    $(".pcpDisplayAsWidgetsLabel").text(localizeString("DISPLAY_AS_WIDGETS"));
+    $(".pcpDisplayAsTableLabel").text(localizeString("DISPLAY_AS_TABLE"));
+    $(".pcpNoPumpsConfiguredLabel").text(localizeString("NO_PUMPS_CONFIGURED"));
+
+    // Show pumps
+    switch (getCookie(PUMP_CONTROL_TYPE_COOKIE)) {
+        case PUMP_CONTROL_TYPE_WIDGET:
+        default:
+            showPumpWidgets();
+            break;
+
+        case PUMP_CONTROL_TYPE_TABLE:
+            showPumpsTable();
+            break;
+    }
+
+    $(".pcpViewWidgets").on('click', function (e) {
+        e.preventDefault();
+        showPumpWidgets();
+    });
+
+    function showPumpWidgets() {
+        // Set widget to show pumps table next time
+        setCookie(PUMP_CONTROL_TYPE_COOKIE, PUMP_CONTROL_TYPE_WIDGET);
+
+        // Stop polling of pumps
+        clearTimeout(timerPumpsPollingId);
+
+        // Fill tab content
+        $("#pcpContent").empty();
+        $("#pcpContent").load("pagesPartial/PumpsControlWidgetsPage.html");
+    }
+
+    $(".pcpViewTable").on('click', function (e) {
+        e.preventDefault();
+        showPumpsTable();
+    });
+
+    function showPumpsTable() {
+        // Set widget to show pumps table next time
+        setCookie(PUMP_CONTROL_TYPE_COOKIE, PUMP_CONTROL_TYPE_TABLE);
+
+        // Stop polling of pumps
+        clearTimeout(timerPumpsPollingId);
+
+        // Fill tab content
+        $("#pcpContent").empty();
+        $("#pcpContent").load("pagesPartial/PumpsControlTablePage.html");
+    }
+</script>

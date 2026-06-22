@@ -168,3 +168,19 @@ class SystemSetting(Base):
 
     key = Column(String(100), primary_key=True, index=True)
     value = Column(String(500), nullable=False)
+
+
+class PendingTransaction(Base):
+    """Registro de transacciones de manguera pendientes (despachos en cola transitoria)."""
+
+    __tablename__ = "pending_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    trx_id = Column(String(50), unique=True, nullable=False, index=True)
+    pump_id = Column(Integer, nullable=False, index=True)
+    nozzle = Column(Integer, nullable=False)
+    volume = Column(Float, nullable=False, comment="Volumen en litros")
+    amount = Column(Float, nullable=False, comment="Monto cobrado")
+    fuel_type = Column(String(50), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+

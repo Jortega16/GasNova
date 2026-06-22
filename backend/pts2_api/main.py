@@ -155,7 +155,7 @@ def create_app() -> FastAPI:
     @app.exception_handler(PTS2Error)
     async def pts2_exception_handler(_request: Request, exc: PTS2Error) -> JSONResponse:
         return JSONResponse(
-            status_code=502,
+            status_code=400,
             content={"ok": False, "type": exc.__class__.__name__, "error": str(exc)},
         )
 

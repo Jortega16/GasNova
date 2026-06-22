@@ -22,8 +22,11 @@ class PumpsAPI:
         self._client = client
 
     def get_status(self, pump_id: int) -> PumpStatus:
-        data = self._client.request_data("PumpGetStatus", {"Pump": pump_id})
-        return PumpStatus.model_validate(data or {"Pump": pump_id})
+        packet = self._client.request("PumpGetStatus", {"Pump": pump_id})
+        data = packet.data or {"Pump": pump_id}
+        if isinstance(data, dict):
+            data["Status"] = packet.type
+        return PumpStatus.model_validate(data)
 
     def authorize(
         self,
@@ -62,6 +65,8 @@ class PumpsAPI:
         return self.authorize(pump_id, nozzle=nozzle, amount=amount, **extra)
 
     def authorize_free(self, pump_id: int, nozzle: int | None = None, **extra: Any) -> Any:
+        if "Type" not in extra:
+            extra["Type"] = "FullTank"
         return self.authorize(pump_id, nozzle=nozzle, **extra)
 
     def stop(self, pump_id: int) -> Any:

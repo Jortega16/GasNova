@@ -564,22 +564,44 @@ def _build_test_bytes() -> bytes:
 # ─── Send bytes to printer via CUPS raw ───────────────────────────────────────
 
 def _list_printers() -> List[str]:
-    """Lista todas las impresoras CUPS disponibles."""
-    result = subprocess.run(
-        ["lpstat", "-a"],
-        capture_output=True, text=True
-    )
-    printers = []
-    for line in result.stdout.splitlines():
-        parts = line.strip().split()
-        if parts:
-            printers.append(parts[0])
-    return printers
+    """Lista todas las impresoras disponibles (CUPS en Unix, Win32 Spooler en Windows)."""
+    import platform
+    if platform.system() == 'Windows':
+        try:
+            import win32print
+            printers = win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS)
+            return [p[2] for p in printers]
+        except Exception as e:
+            print(f"[print_receipt] Error enumerando impresoras en Windows: {e}")
+            return []
+
+    try:
+        result = subprocess.run(
+            ["lpstat", "-a"],
+            capture_output=True, text=True
+        )
+        printers = []
+        for line in result.stdout.splitlines():
+            parts = line.strip().split()
+            if parts:
+                printers.append(parts[0])
+        return printers
+    except Exception as e:
+        print(f"[print_receipt] Error listando impresoras en Unix: {e}")
+        return []
 
 
 def _detect_printer() -> Optional[str]:
     """Retorna la impresora configurada si existe, o la primera POS disponible."""
     configured = _print_config.get("printer_name", "")
+    
+    # Si la impresora configurada parece de red (IP o tcp://), retornar esa directamente
+    import re
+    if configured:
+        target = configured.strip()
+        if target.lower().startswith("tcp://") or ":" in target or re.match(r'^(\d{1,3}\.){3}\d{1,3}$', target):
+            return configured
+
     all_printers = _list_printers()
 
     # Primero intentar la configurada
@@ -595,7 +617,63 @@ def _detect_printer() -> Optional[str]:
 
 
 def _send_raw(data: bytes, printer_name: str) -> tuple[bool, str]:
-    """Envía bytes ESC/POS crudos a la impresora via lp -o raw."""
+    """Envía bytes ESC/POS crudos a la impresora (USB local o red TCP)."""
+    # 1. Comprobar si es una impresora de red (TCP/IP)
+    is_network = False
+    host = ""
+    port = 9100  # Puerto ESC/POS por defecto
+    
+    target = printer_name.strip()
+    if target.lower().startswith("tcp://"):
+        target = target[6:]
+        is_network = True
+        
+    if ":" in target:
+        parts = target.split(":")
+        if len(parts) == 2 and parts[1].isdigit():
+            host = parts[0]
+            port = int(parts[1])
+            is_network = True
+    elif not is_network:
+        import re
+        if re.match(r'^(\d{1,3}\.){3}\d{1,3}$', target):
+            host = target
+            is_network = True
+            
+    if is_network:
+        if not host:
+            host = target
+        import socket
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(10.0)
+                s.connect((host, port))
+                s.sendall(data)
+            return True, f"Impreso exitosamente vía red TCP: {host}:{port}"
+        except Exception as e:
+            return False, f"Error imprimiendo en red a {host}:{port}: {str(e)}"
+
+    # 2. Impresión local por Spooler de Windows o CUPS de Unix
+    import platform
+    if platform.system() == 'Windows':
+        try:
+            import win32print
+            hPrinter = win32print.OpenPrinter(printer_name)
+            try:
+                hJob = win32print.StartDocPrinter(hPrinter, 1, ("GasNova Ticket", None, "RAW"))
+                try:
+                    win32print.StartPagePrinter(hPrinter)
+                    win32print.WritePrinter(hPrinter, data)
+                    win32print.EndPagePrinter(hPrinter)
+                finally:
+                    win32print.EndDocPrinter(hPrinter)
+            finally:
+                win32print.ClosePrinter(hPrinter)
+            return True, f"Impreso exitosamente en Windows: {printer_name}"
+        except Exception as e:
+            return False, str(e)
+
+    # Unix fallback (CUPS lp -o raw)
     with tempfile.NamedTemporaryFile(
         mode='wb', suffix='.bin', delete=False
     ) as f:
@@ -716,16 +794,79 @@ async def printer_status():
     all_printers = _list_printers()
     active = _detect_printer()
 
+    # Si la impresora activa parece de red y no está en la lista de locales, agregarla para reportar estado
+    if active and active not in all_printers:
+        import re
+        target = active.strip()
+        if target.lower().startswith("tcp://") or ":" in target or re.match(r'^(\d{1,3}\.){3}\d{1,3}$', target):
+            all_printers.append(active)
+
     statuses: Dict[str, Any] = {}
+    import platform
+    is_windows = platform.system() == 'Windows'
     for pname in all_printers:
-        result = subprocess.run(
-            ["lpstat", "-p", pname], capture_output=True, text=True
-        )
-        statuses[pname] = {
-            "available": result.returncode == 0,
-            "info": result.stdout.strip() or result.stderr.strip(),
-            "is_active": pname == active,
-        }
+        # Detectar si es impresora de red
+        is_net = False
+        net_host = ""
+        net_port = 9100
+        target = pname.strip()
+        if target.lower().startswith("tcp://"):
+            target = target[6:]
+            is_net = True
+        if ":" in target:
+            parts = target.split(":")
+            if len(parts) == 2 and parts[1].isdigit():
+                net_host = parts[0]
+                net_port = int(parts[1])
+                is_net = True
+        elif not is_net:
+            import re
+            if re.match(r'^(\d{1,3}\.){3}\d{1,3}$', target):
+                net_host = target
+                is_net = True
+
+        if is_net:
+            if not net_host:
+                net_host = target
+            import socket
+            try:
+                # Intento rápido de conexión
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(1.0)
+                    s.connect((net_host, net_port))
+                statuses[pname] = {
+                    "available": True,
+                    "info": f"Impresora de red TCP online en {net_host}:{net_port}",
+                    "is_active": pname == active,
+                }
+            except Exception as e:
+                statuses[pname] = {
+                    "available": False,
+                    "info": f"Impresora de red TCP offline en {net_host}:{net_port}: {str(e)}",
+                    "is_active": pname == active,
+                }
+        elif is_windows:
+            statuses[pname] = {
+                "available": True,
+                "info": "Impresora Windows activa / lista en el sistema",
+                "is_active": pname == active,
+            }
+        else:
+            try:
+                result = subprocess.run(
+                    ["lpstat", "-p", pname], capture_output=True, text=True
+                )
+                statuses[pname] = {
+                    "available": result.returncode == 0,
+                    "info": result.stdout.strip() or result.stderr.strip(),
+                    "is_active": pname == active,
+                }
+            except Exception as e:
+                statuses[pname] = {
+                    "available": False,
+                    "info": f"Error consultando estado en Unix: {str(e)}",
+                    "is_active": pname == active,
+                }
 
     return {
         "active_printer": active,
@@ -745,3 +886,15 @@ async def update_print_config(update: PrintConfigUpdate):
     data = update.model_dump(exclude_none=True)
     _print_config.update(data)
     return {"ok": True, "config": _print_config}
+
+
+@router.get("/download-bat")
+async def download_bat():
+    """Descarga el script run_backend.bat para Windows."""
+    from fastapi.responses import FileResponse
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # El archivo está en backend/run_backend.bat, subiendo un nivel desde pts2_api/routers a backend
+    bat_path = os.path.abspath(os.path.join(current_dir, "..", "..", "run_backend.bat"))
+    if os.path.exists(bat_path):
+        return FileResponse(bat_path, media_type='application/octet-stream', filename='run_backend.bat')
+    raise HTTPException(status_code=404, detail="Script run_backend.bat no encontrado.")

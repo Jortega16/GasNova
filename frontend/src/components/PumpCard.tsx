@@ -20,7 +20,8 @@ const fuelTypeTranslations: { [key: string]: string } = {
   'Regular Unleaded': 'Gasolina Regular',
   'Premium Unleaded': 'Gasolina Premium',
   'Diesel': 'Diesel',
-  'Kerosene': 'Queroseno'
+  'Kerosene': 'Queroseno',
+  'LPG': 'LPG'
 };
 
 export default function PumpCard({ pump, onPreAuthorize, onEmergencyStop, onResetPump, activeFuelPrice }: PumpCardProps) {

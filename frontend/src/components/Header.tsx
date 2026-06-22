@@ -20,7 +20,8 @@ import {
   Users,
   LogOut,
   ChevronDown,
-  UserCheck
+  UserCheck,
+  Terminal
 } from 'lucide-react';
 import { UserProfile } from '../types';
 
@@ -65,6 +66,7 @@ export default function Header({
     { id: 'inventory', label: 'Inventario', icon: Package },
     { id: 'users', label: 'Usuarios / Roles', icon: Users },
     { id: 'settings', label: 'Ajustes', icon: Settings },
+    { id: 'pts2RawApi', label: 'Simulador PTS-2', icon: Terminal },
     { id: 'help', label: 'Ayuda', icon: HelpCircle },
   ];
 

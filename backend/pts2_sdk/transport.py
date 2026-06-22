@@ -127,6 +127,14 @@ class PTS2Transport:
         try:
             return json.loads(text)
         except ValueError as first_error:
+            # Clean trailing commas which are common in some PTS-2 firmware versions
+            import re
+            cleaned = re.sub(r',\s*([\]}])', r'\1', text)
+            try:
+                return json.loads(cleaned)
+            except ValueError:
+                pass
+
             decoder = json.JSONDecoder()
             try:
                 decoded, index = decoder.raw_decode(text)

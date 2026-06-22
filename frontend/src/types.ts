@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type FuelType = 'Regular Unleaded' | 'Premium Unleaded' | 'Diesel' | 'Kerosene';
+export type FuelType = 'Regular Unleaded' | 'Premium Unleaded' | 'Diesel' | 'Kerosene' | 'LPG';
 
-export type PumpStatus = 'Dispensing' | 'Blocked' | 'Ready' | 'Prepaid' | 'Fueling' | 'Idle' | 'Unpaid';
+export type PumpStatus = 'Dispensing' | 'Blocked' | 'Ready' | 'Prepaid' | 'Fueling' | 'Idle' | 'Unpaid' | 'Offline' | 'EndOfTransaction' | 'Authorized';
 
 export interface NozzleTransaction {
   id: string;
