@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import Shift, PumpTransaction, SystemSetting
+from ..models import Shift, PumpTransaction, SystemSetting, PendingTransaction, ShiftClosure
 from ..schemas import CommandResponse, ShiftCreate, ShiftResponse
+from ..transaction_store import build_shift_closure_totals, serialize_pending_transaction
 
 router = APIRouter(prefix="/shifts", tags=["shifts"])
 
@@ -31,7 +33,6 @@ def seed_initial_shift_if_empty(db: Session) -> None:
 @router.get("", response_model=CommandResponse, summary="Get shift logs")
 def list_shifts(db: Session = Depends(get_db)) -> CommandResponse:
     """Get the history of closed and active station shifts."""
-    seed_initial_shift_if_empty(db)
     shifts = db.query(Shift).order_by(Shift.created_at.desc()).all()
     serialized = [
         ShiftResponse(
@@ -50,8 +51,6 @@ def list_shifts(db: Session = Depends(get_db)) -> CommandResponse:
 @router.post("/close", response_model=CommandResponse, summary="Close active shift")
 def close_shift(request: ShiftCreate, db: Session = Depends(get_db)) -> CommandResponse:
     """Close the currently active shift and record its final metrics."""
-    seed_initial_shift_if_empty(db)
-    
     # Try to find the active shift by ID or get the latest active shift
     active_shift = db.query(Shift).filter(
         Shift.shift_id == request.shift_id,
@@ -65,17 +64,51 @@ def close_shift(request: ShiftCreate, db: Session = Depends(get_db)) -> CommandR
     if not active_shift:
         raise HTTPException(status_code=404, detail="No se encontró un turno activo para cerrar")
 
+    pending_transactions = db.query(PendingTransaction).filter(
+        or_(
+            PendingTransaction.shift_id == active_shift.shift_id,
+            PendingTransaction.shift_id.is_(None),
+        )
+    ).all()
+    if pending_transactions:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "No se puede cerrar el turno con despachos pendientes por cobrar",
+                "pending_transactions": [serialize_pending_transaction(p) for p in pending_transactions],
+            },
+        )
+
+    shift_transactions = db.query(PumpTransaction).filter(
+        PumpTransaction.shift_id == active_shift.shift_id
+    ).all()
+    totals = build_shift_closure_totals(shift_transactions)
+
+    shift_closure = ShiftClosure(
+        shift_id=active_shift.shift_id,
+        operator_name=active_shift.operator_name,
+        opened_at=active_shift.start_time,
+        closed_at=request.end_time or "Now",
+        total_sales=totals["total_sales"],
+        total_volume=totals["total_volume"],
+        transaction_count=totals["transaction_count"],
+        fuel_breakdown=totals["fuel_breakdown"],
+        payment_breakdown=totals["payment_breakdown"],
+        pending_count=0,
+        closure_status="Closed",
+    )
+    db.add(shift_closure)
+
     # Update active shift details
     active_shift.status = "Closed"
     active_shift.end_time = request.end_time or "Now"
     db.commit()
     db.refresh(active_shift)
+    db.refresh(shift_closure)
 
     # Automatically create a new active shift for the next operator / schedule
     next_num = int(active_shift.shift_id.split("-")[-1]) + 1
     date_part = active_shift.shift_id.split("-")[1]
-    next_id = f"SH-{date_part}-{String(next_num).zfill(2) if 'String' in globals() else str(next_num).zfill(2)}"
-    # Wait, python's zfill is on strings: str(next_num).zfill(2)
     next_id = f"SH-{date_part}-{str(next_num).zfill(2)}"
 
     next_shift = Shift(
@@ -98,6 +131,21 @@ def close_shift(request: ShiftCreate, db: Session = Depends(get_db)) -> CommandR
     )
     return CommandResponse(data={
         "closed_shift": res.model_dump(),
+        "closure": {
+            "id": shift_closure.id,
+            "shift_id": shift_closure.shift_id,
+            "operator_name": shift_closure.operator_name,
+            "opened_at": shift_closure.opened_at,
+            "closed_at": shift_closure.closed_at,
+            "total_sales": shift_closure.total_sales,
+            "total_volume": shift_closure.total_volume,
+            "transaction_count": shift_closure.transaction_count,
+            "fuel_breakdown": shift_closure.fuel_breakdown or [],
+            "payment_breakdown": shift_closure.payment_breakdown or [],
+            "pending_count": shift_closure.pending_count,
+            "closure_status": shift_closure.closure_status,
+        },
+        "totals": totals,
         "new_shift": {
             "shift_id": next_shift.shift_id,
             "operator_name": next_shift.operator_name,
@@ -121,7 +169,17 @@ def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> Com
     serialized = []
     for t in transactions:
         nozzle = t.nozzle or 1
-        fuel_type = fuel_grades[nozzle - 1] if 1 <= nozzle <= len(fuel_grades) else 'Regular Unleaded'
+        fuel_type = None
+        if t.raw_payload:
+            fuel_type = (
+                t.raw_payload.get("FuelGradeName")
+                or t.raw_payload.get("Product")
+                or t.raw_payload.get("ProductName")
+                or t.raw_payload.get("fuelType")
+                or t.raw_payload.get("fuel_type")
+            )
+        if not fuel_type:
+            fuel_type = fuel_grades[nozzle - 1] if 1 <= nozzle <= len(fuel_grades) else 'Regular Unleaded'
         
         # Convert volume from liters back to gallons only if unit_measure is set to Galones
         volume_val = t.volume or 0.0
@@ -139,6 +197,7 @@ def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> Com
             "volume": round(volume_val, 2),
             "amount": round(t.amount or 0.0, 2),
             "fuelType": fuel_type,
+            "fuel_type": fuel_type,
             "paymentType": t.payment_type or "Cash"
         })
         

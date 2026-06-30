@@ -90,7 +90,7 @@ class UserCreate(ApiModel):
     name: str
     role: str
     avatar: str | None = None
-    pin: str
+    pin: str = Field(min_length=4, max_length=4, pattern=r"^\d{4}$", description="PIN de 4 dígitos numéricos.")
     status: str = "Active"
 
 
@@ -105,7 +105,7 @@ class UserResponse(ApiModel):
 
 class LoginRequest(ApiModel):
     username: str
-    pin: str
+    pin: str = Field(min_length=4, max_length=4, pattern=r"^\d{4}$", description="PIN de 4 dígitos numéricos.")
 
 
 class ShiftCreate(ApiModel):
@@ -133,6 +133,13 @@ class TransactionCreate(ApiModel):
     unit_price: float | None = None
     payment_type: str = "Cash"
     status: str = "Completed"
+    document_type: str | None = None
+    document_number: str | None = None
+    payment_reference: str | None = None
+    cashier_name: str | None = None
+    station_code: str | None = None
+    pos_terminal_code: str | None = None
+    raw_payload: dict[str, Any] | None = None
 
 
 class DeliveryCreate(ApiModel):
@@ -200,4 +207,20 @@ class PendingTransactionCreate(ApiModel):
     volume: float
     amount: float
     fuel_type: str
+    pts_transaction_id: str | None = None
+    raw_payload: dict[str, Any] | None = None
+    shift_id: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    status: str = "Pending"
+    station_code: str | None = None
+    pos_terminal_code: str | None = None
 
+
+class PendingTransactionProcess(ApiModel):
+    payment_type: str = "Cash"
+    status: str = "Completed"
+    document_type: str | None = None
+    document_number: str | None = None
+    payment_reference: str | None = None
+    cashier_name: str | None = None

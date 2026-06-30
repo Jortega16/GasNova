@@ -2,124 +2,81 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import asyncio
-from datetime import datetime
+import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_redoc_html
-
 from fastapi.middleware.cors import CORSMiddleware
+
 from pts2_sdk.exceptions import PTS2Error
 
-from .routers import health, pumps, reports, tanks, websocket, users, shifts, scheduled_prices, print_receipt, settings
+from .routers import (
+    health, pumps, reports, tanks, websocket,
+    users, shifts, scheduled_prices, print_receipt, settings,
+)
 from .database import init_db, SessionLocal
-from .models import DbScheduledPrice
-from .dependencies import get_pts2_client, get_settings
-from . import models  # noqa: F401 - Import models to register them with Base
+from .worker import scheduled_price_worker
+
+logger = logging.getLogger("pts2_api")
 
 
-async def apply_scheduled_prices_cycle(db: SessionLocal = None) -> None:
-    """Ejecuta un único ciclo de verificación y aplicación de precios programados."""
-    fuel_grades = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene']
-    own_db = False
-    if db is None:
-        db = SessionLocal()
-        own_db = True
-        
+def _seed_database() -> None:
+    """Run all data seeds that should execute once at startup."""
+    db = SessionLocal()
     try:
-        now = datetime.now()
-        pending_schedules = db.query(DbScheduledPrice).filter(
-            DbScheduledPrice.status == "Pending"
-        ).all()
-        
-        for schedule in pending_schedules:
-            sched_dt = None
-            for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %I:%M %p", "%Y-%m-%d %H:%M:%S"):
-                try:
-                    sched_dt = datetime.strptime(schedule.date_time, fmt)
-                    break
-                except ValueError:
-                    continue
-            
-            if sched_dt is None:
-                print(f"Warning: Could not parse date_time string: {schedule.date_time}")
-                continue
-            
-            if sched_dt <= now:
-                nozzle_index = -1
-                for idx, grade in enumerate(fuel_grades):
-                    if grade.lower() == schedule.fuel_type.lower():
-                        nozzle_index = idx
-                        break
-                
-                nozzle_number = nozzle_index + 1 if nozzle_index >= 0 else 1
-                
-                # Actualizar en el PTS-2 para los surtidores 1 a 4
-                try:
-                    client = get_pts2_client()
-                    for pump_id in range(1, 5):
-                        client.pumps.set_prices(pump_id, [{"Nozzle": nozzle_number, "Price": schedule.new_price}])
-                    client.close()
-                    print(f"Applied scheduled price change {schedule.id}: {schedule.fuel_type} -> {schedule.new_price}")
-                except PTS2Error as pts_err:
-                    print(f"PTS-2 offline. Simulating price update for {schedule.fuel_type} (Nozzle {nozzle_number}): {pts_err}")
-                except Exception as client_err:
-                    print(f"Error communicating with PTS-2: {client_err}")
-                
-                # Cambiar estado a Applied
-                schedule.status = "Applied"
-                db.commit()
+        from .routers.users import seed_initial_users_if_empty
+        from .routers.shifts import seed_initial_shift_if_empty
+        seed_initial_users_if_empty(db)
+        seed_initial_shift_if_empty(db)
+    except Exception as exc:
+        logger.warning("Seed error during startup: %s", exc)
     finally:
-        if own_db:
-            db.close()
-
-
-async def scheduled_price_worker():
-    """Worker asíncrono que verifica periódicamente cambios de precios programados."""
-    # Esperar unos segundos iniciales
-    await asyncio.sleep(5)
-    
-    while True:
-        try:
-            await apply_scheduled_prices_cycle()
-        except Exception as exc:
-            print(f"Error in scheduled price worker cycle: {exc}")
-        
-        await asyncio.sleep(10)
+        db.close()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
-    # Startup
     try:
         init_db()
     except Exception as exc:
-        print(f"Warning: Could not initialize database tables: {exc}")
-    
-    # Iniciar la tarea en segundo plano
+        logger.warning("Could not initialize database tables: %s", exc)
+
+    _seed_database()
+
+    # Shared PTS-2 client singleton — stored on app.state so all requests
+    # share the same connection instead of creating one per request.
+    from .dependencies import build_pts2_client
+    app.state.pts2_client = build_pts2_client()
+
     worker_task = asyncio.create_task(scheduled_price_worker())
-    
+
     yield
-    
-    # Shutdown
+
     worker_task.cancel()
     try:
         await worker_task
     except asyncio.CancelledError:
         pass
 
+    try:
+        app.state.pts2_client.close()
+    except Exception:
+        pass
 
 
 def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
     app = FastAPI(
         title="GasNova PTS-2 API",
         description="REST API and optional WebSocket gateway for Technotrade PTS-2 jsonPTS.",
         version="0.1.0",
         contact={"name": "GasNova"},
         lifespan=lifespan,
+        redoc_url=None,
         openapi_tags=[
             {"name": "health", "description": "Connectivity and controller health checks."},
             {"name": "pumps", "description": "Pump status, authorization and POS workflow commands."},
@@ -136,7 +93,6 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -153,7 +109,9 @@ def create_app() -> FastAPI:
     app.include_router(settings.router)
 
     @app.exception_handler(PTS2Error)
-    async def pts2_exception_handler(_request: Request, exc: PTS2Error) -> JSONResponse:
+    async def pts2_exception_handler(
+        _request: Request, exc: PTS2Error
+    ) -> JSONResponse:
         return JSONResponse(
             status_code=400,
             content={"ok": False, "type": exc.__class__.__name__, "error": str(exc)},
@@ -170,9 +128,14 @@ def create_app() -> FastAPI:
             "health": "/health",
         }
 
+    @app.get("/redoc", include_in_schema=False)
     @app.get("/redocs", include_in_schema=False)
-    def redocs_alias() -> object:
-        return get_redoc_html(openapi_url=app.openapi_url or "/openapi.json", title=f"{app.title} - ReDoc")
+    def redoc() -> object:
+        return get_redoc_html(
+            openapi_url=app.openapi_url or "/openapi.json",
+            title=f"{app.title} - ReDoc",
+            redoc_favicon_url="https://fastapi.tiangolo.com/img/favicon.png",
+        )
 
     return app
 

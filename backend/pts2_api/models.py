@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Index
+from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, Index, JSON
 from sqlalchemy.sql import func
 
 from .database import Base
@@ -20,6 +20,7 @@ class PumpTransaction(Base):
     pump_id = Column(Integer, nullable=False, index=True)
     transaction_id = Column(Integer, nullable=False)
     nozzle = Column(Integer, nullable=True)
+    fuel_type = Column(String(50), nullable=True, index=True, comment="Tipo de combustible: Regular Unleaded, Diesel, etc.")
     volume = Column(Float, nullable=True, comment="Volumen en litros")
     amount = Column(Float, nullable=True, comment="Monto en moneda local")
     unit_price = Column(Float, nullable=True, comment="Precio por unidad")
@@ -28,6 +29,14 @@ class PumpTransaction(Base):
     status = Column(String(50), nullable=True, comment="Estado: completed, cancelled, etc")
     shift_id = Column(String(50), nullable=True, index=True)
     payment_type = Column(String(50), nullable=True)
+    document_type = Column(String(50), nullable=True)
+    document_number = Column(String(100), nullable=True)
+    payment_reference = Column(String(100), nullable=True)
+    cashier_name = Column(String(100), nullable=True)
+    source_pending_trx_id = Column(String(50), nullable=True, index=True)
+    station_code = Column(String(50), nullable=True)
+    pos_terminal_code = Column(String(50), nullable=True)
+    raw_payload = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -182,5 +191,46 @@ class PendingTransaction(Base):
     volume = Column(Float, nullable=False, comment="Volumen en litros")
     amount = Column(Float, nullable=False, comment="Monto cobrado")
     fuel_type = Column(String(50), nullable=False)
+    pts_transaction_id = Column(String(100), nullable=True, index=True)
+    raw_payload = Column(JSON, nullable=True)
+    shift_id = Column(String(50), nullable=True, index=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    status = Column(String(50), default="Pending", nullable=False)
+    station_code = Column(String(50), nullable=True)
+    pos_terminal_code = Column(String(50), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
+
+class ShiftClosure(Base):
+    """Resumen congelado del cierre formal de un turno."""
+
+    __tablename__ = "shift_closures"
+
+    id = Column(Integer, primary_key=True, index=True)
+    shift_id = Column(String(50), nullable=False, index=True)
+    operator_name = Column(String(100), nullable=False)
+    opened_at = Column(String(100), nullable=True)
+    closed_at = Column(String(100), nullable=True)
+    total_sales = Column(Float, default=0.0, nullable=False)
+    total_volume = Column(Float, default=0.0, nullable=False)
+    transaction_count = Column(Integer, default=0, nullable=False)
+    fuel_breakdown = Column(JSON, nullable=True)
+    payment_breakdown = Column(JSON, nullable=True)
+    pending_count = Column(Integer, default=0, nullable=False)
+    closure_status = Column(String(50), default="Closed", nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class PumpEventLog(Base):
+    """Evento crudo del PTS-2 conservado para auditoría técnica."""
+
+    __tablename__ = "pump_event_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String(100), nullable=False, index=True)
+    pump_id = Column(Integer, nullable=True, index=True)
+    nozzle = Column(Integer, nullable=True)
+    pts_transaction_id = Column(String(100), nullable=True, index=True)
+    raw_payload = Column(JSON, nullable=True)
+    received_at = Column(DateTime, server_default=func.now(), nullable=False)
