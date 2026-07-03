@@ -54,6 +54,20 @@ Ese mismo comando sirve para actualizar más adelante: `docker compose pull && d
 
 Solo funciona dentro de la misma red local (no es un dominio público) y requiere que los dispositivos que acceden tengan soporte mDNS/Bonjour (Windows, macOS y la mayoría de móviles ya lo traen).
 
+### HTTPS para `gasnova.local`
+
+El frontend sirve HTTPS en el puerto 443 (con redirect automático desde 80) usando un certificado en `./certs/`, montado como volumen en `docker-compose.yml`.
+
+```bash
+bash scripts/generate-certs.sh [IP_DE_LA_ESTACION]
+docker compose restart gasnova-frontend
+```
+
+- **Con [mkcert](https://github.com/FiloSottile/mkcert) instalado** (recomendado): genera un certificado firmado por una CA local. El script imprime la ruta del `rootCA.pem` — hay que instalarlo como certificado de confianza en cada dispositivo (POS, tablets) que acceda, y después `https://gasnova.local` no mostrará advertencias.
+- **Sin mkcert:** genera un certificado autofirmado con `openssl` (funciona igual, pero el navegador mostrará advertencia de "no seguro" hasta aceptarlo manualmente).
+
+`./certs/` no se versiona en git (contiene la clave privada) — hay que generarlo una vez por estación.
+
 Para fijar una versión específica en vez de `:latest`, exporta las variables antes de `pull`/`up`:
 
 ```bash
