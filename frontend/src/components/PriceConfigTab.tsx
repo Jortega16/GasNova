@@ -261,14 +261,7 @@ export default function PriceConfigTab({
                             className="flex items-center gap-1 bg-[#1b365d] hover:bg-[#1b365d]/80 text-white font-semibold text-xs py-1 px-2.5 rounded transition-all cursor-pointer shadow-sm"
                           >
                             <Edit2 className="w-3 h-3" />
-                            <span>Editar</span>
-                          </button>
-                          <button
-                            onClick={() => alert(`El tipo base de combustible "${p.fuelType}" no se puede eliminar. Solo es modificable.`)}
-                            className="flex items-center gap-1 bg-red-800 hover:bg-red-800/80 text-white font-semibold text-xs py-1 px-2.5 rounded transition-all cursor-pointer shadow-sm"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                            <span>Eliminar</span>
+                            <span>Editar Precio</span>
                           </button>
                         </div>
                       )}
@@ -499,7 +492,7 @@ export default function PriceConfigTab({
               <HelpCircle className="w-3.5 h-3.5 text-[#93b9ff]" /> Nota Informativa:
             </span>
             <p>
-              Al presionar "Apply to All Pumps", la computadora central recalcula inmediatamente la tarifa cobrada por manguera en el dispenser físico. El cambio se refleja instantáneamente en el panel del operario y en las pantallas exteriores.
+              Al presionar "Aplicar a Todas las Bombas", la computadora central recalcula inmediatamente la tarifa cobrada por manguera en el dispensador físico. El cambio se refleja instantáneamente en el panel del operario y en las pantallas exteriores.
             </p>
           </div>
         </div>

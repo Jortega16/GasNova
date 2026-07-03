@@ -89,6 +89,7 @@ export interface PrintClosureParams {
   transaction_count: number;
   fuel_breakdown?: unknown[];
   payment_breakdown?: unknown[];
+  counter_breakdown?: unknown[];
 }
 
 export interface PrintNextShiftParams {

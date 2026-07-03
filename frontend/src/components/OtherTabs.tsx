@@ -39,6 +39,7 @@ interface OtherTabsProps {
   dispensers?: DispenserState[];
   setDispensers?: React.Dispatch<React.SetStateAction<DispenserState[]>>;
   onSettingsChange?: () => void;
+  onOpenWizard?: () => void;
 }
 
 const fuelTypeTranslations: { [key: string]: string } = {
@@ -71,7 +72,8 @@ export default function OtherTabs({
   setThemeMode,
   dispensers = [],
   setDispensers,
-  onSettingsChange
+  onSettingsChange,
+  onOpenWizard,
 }: OtherTabsProps) {
   
   // States for Card management
@@ -125,6 +127,9 @@ export default function OtherTabs({
   // States for dynamic dispensers inside Settings
   const [newCaraConfName, setNewCaraConfName] = useState('');
   const [newCaraConfProducts, setNewCaraConfProducts] = useState<FuelType[]>(['Regular Unleaded', 'Premium Unleaded', 'Diesel']);
+  const [caraConfigSaving, setCaraConfigSaving] = useState(false);
+  const [pts2Syncing, setPts2Syncing] = useState(false);
+  const [pts2SyncResult, setPts2SyncResult] = useState<'ok' | 'error' | null>(null);
 
   // ── Printer / Template Settings state ─────────────────────────────────────
   const [settingsTab, setSettingsTab] = useState<'general' | 'printer' | 'station'>('general');
@@ -252,6 +257,41 @@ export default function OtherTabs({
       .finally(() => setLoadingTrxs(false));
   }, [selectedShiftFilter, transactions]);
 
+  // Carga mapeo actual de caras desde el backend al entrar a settings
+  useEffect(() => {
+    if (tabId !== 'settings' || !setDispensers) return;
+    api.getPumpsConfiguration().then(res => {
+      if (!res.ok || !Array.isArray(res.data) || res.data.length === 0) return;
+      const fuelMap: Record<number, FuelType> = {
+        1: 'Regular Unleaded',
+        2: 'Premium Unleaded',
+        3: 'Diesel',
+        4: 'Kerosene',
+      };
+      setDispensers(
+        (res.data as any[]).map(p => ({
+          id: p.pump_id ?? p.id,
+          name: p.name ?? `Cara ${p.pump_id ?? p.id}`,
+          nozzles: Array.isArray(p.nozzles)
+            ? p.nozzles.map((n: any) => ({
+                fuelType: fuelMap[n.fuel_grade_id] ?? 'Regular Unleaded',
+                status: 'Idle' as const,
+                currentAmount: 0,
+                currentVolume: 0,
+                progressPercent: 0,
+              }))
+            : Array.from({ length: p.nozzles_count ?? 1 }, (_, i) => ({
+                fuelType: fuelMap[i + 1] ?? 'Regular Unleaded',
+                status: 'Idle' as const,
+                currentAmount: 0,
+                currentVolume: 0,
+                progressPercent: 0,
+              })),
+        }))
+      );
+    }).catch(() => { /* offline — mantiene estado local */ });
+  }, [tabId]);
+
   const handleSavePrinterConfig = async () => {
     setPrinterSaving(true);
     try {
@@ -322,6 +362,97 @@ export default function OtherTabs({
       console.error(e);
     } finally {
       setPrinterSaving(false);
+    }
+  };
+
+  const handleSyncFromPts2 = async () => {
+    if (!setDispensers) return;
+    setPts2Syncing(true);
+    setPts2SyncResult(null);
+    try {
+      const [pumpsRes, nozzlesRes, fgRes] = await Promise.all([
+        api.getPumpsConfigurationPts(),
+        api.getNozzlesConfiguration(),
+        api.getFuelGradesConfiguration(),
+      ]);
+      if (!pumpsRes.ok) throw new Error('No se pudo leer la configuración de caras del PTS-2');
+
+      const pumpsData = (pumpsRes.data as any) ?? {};
+      const pumps: any[] = pumpsData.Pumps ?? pumpsData.pumps ?? [];
+      if (pumps.length === 0) throw new Error('El PTS-2 no tiene caras configuradas');
+
+      // Build fuel grade id → FuelType name map
+      const fuelNameMap: Record<number, FuelType> = {
+        1: 'Regular Unleaded',
+        2: 'Premium Unleaded',
+        3: 'Diesel',
+        4: 'Kerosene',
+      };
+      if (fgRes.ok && fgRes.data) {
+        const fgData = (fgRes.data as any);
+        const grades: any[] = fgData.FuelGrades ?? fgData.fuel_grades ?? [];
+        const knownNames: Record<string, FuelType> = {
+          'regular': 'Regular Unleaded',
+          'super': 'Premium Unleaded',
+          'premium': 'Premium Unleaded',
+          'diesel': 'Diesel',
+          'kerosene': 'Kerosene',
+          'queroseno': 'Kerosene',
+        };
+        grades.forEach((g: any) => {
+          const lower = (g.Name ?? g.name ?? '').toLowerCase();
+          const found = Object.entries(knownNames).find(([k]) => lower.includes(k));
+          if (found) fuelNameMap[g.Id ?? g.id] = found[1];
+        });
+      }
+
+      // Build nozzle map: pumpId → FuelType[]
+      const nozzleMap: Record<number, FuelType[]> = {};
+      if (nozzlesRes.ok && nozzlesRes.data) {
+        const nzData = (nozzlesRes.data as any);
+        const pumpNozzles: any[] = nzData.PumpNozzles ?? nzData.pump_nozzles ?? [];
+        pumpNozzles.forEach((pn: any) => {
+          const pid = pn.PumpId ?? pn.pump_id;
+          const ids: number[] = pn.FuelGradeIds ?? pn.fuel_grade_ids ?? [];
+          nozzleMap[pid] = ids
+            .filter(id => id > 0)
+            .map(id => fuelNameMap[id] ?? 'Regular Unleaded');
+        });
+      }
+
+      const newDispensers = pumps.map((p: any) => {
+        const id = p.Id ?? p.id;
+        const fuels = nozzleMap[id] ?? [fuelNameMap[1]];
+        return {
+          id,
+          name: `Cara ${id}`,
+          nozzles: fuels.map(fuelType => ({
+            fuelType,
+            status: 'Idle' as const,
+            currentAmount: 0,
+            currentVolume: 0,
+            progressPercent: 0,
+          })),
+        };
+      });
+
+      setDispensers(newDispensers);
+
+      // Persist each pump to local backend config
+      await Promise.allSettled(
+        newDispensers.map(d =>
+          api.saveLocalPumpConfig({ pumpId: d.id, name: d.name, nozzlesCount: d.nozzles.length })
+        )
+      );
+
+      setPts2SyncResult('ok');
+      setTimeout(() => setPts2SyncResult(null), 4000);
+    } catch (e) {
+      console.error('Sync PTS-2 error:', e);
+      setPts2SyncResult('error');
+      setTimeout(() => setPts2SyncResult(null), 4000);
+    } finally {
+      setPts2Syncing(false);
     }
   };
 
@@ -679,11 +810,11 @@ export default function OtherTabs({
         setPaymentMethods(prev => prev.map(m => m.id === id ? { ...m, enabled: !m.enabled } : m));
       };
 
-      const handleAddNewCara = (e: React.FormEvent) => {
+      const handleAddNewCara = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!setDispensers || !newCaraConfName.trim()) return;
         if (newCaraConfProducts.length === 0) return;
-        
+
         const nextId = dispensers.length > 0 ? Math.max(...dispensers.map(d => d.id)) + 1 : 1;
         const newDispenser: DispenserState = {
           id: nextId,
@@ -698,6 +829,17 @@ export default function OtherTabs({
         };
         setDispensers(prev => [...prev, newDispenser]);
         setNewCaraConfName('');
+
+        // Persiste en backend
+        setCaraConfigSaving(true);
+        try {
+          await api.saveLocalPumpConfig({
+            pumpId: nextId,
+            name: newDispenser.name,
+            nozzlesCount: newDispenser.nozzles.length,
+          });
+        } catch (_) { /* offline — solo local */ }
+        finally { setCaraConfigSaving(false); }
       };
 
       const handleDeleteCara = (id: number) => {
@@ -1375,7 +1517,7 @@ export default function OtherTabs({
                     }}
                     className="text-[9px] bg-[#1b365d] hover:bg-[#1b365d]/95 text-white font-bold py-1 px-2.5 rounded border border-neutral-300 transition-colors cursor-pointer shrink-0"
                   >
-                    {isTestingApi ? "Ping..." : "Test Ping"}
+                    {isTestingApi ? "Probando..." : "Probar Conexión"}
                   </button>
                 </div>
               </div>
@@ -1751,83 +1893,46 @@ export default function OtherTabs({
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 font-sans">
               
-              {/* Form to Create New Dispenser / High Fast installation */}
-              <div className="col-span-1 lg:col-span-4 bg-slate-50 border border-neutral-200 p-4 rounded-xl space-y-4 h-fit">
-                <span className="font-extrabold text-xs uppercase text-[#1b365d] block tracking-wider">
-                  Instalar Nuevo Dispensador / Cara
-                </span>
-                
-                <form onSubmit={handleAddNewCara} className="space-y-3">
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                      Identificador / Nombre
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Ej. Cara 5"
-                      value={newCaraConfName}
-                      onChange={(e) => setNewCaraConfName(e.target.value)}
-                      className="w-full bg-white border border-neutral-300 rounded px-2.5 py-1.5 text-xs text-slate-800 font-semibold focus:outline-none focus:border-[#355e9e]"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                      Mangueras Prefijadas (Mapeo Inicial)
-                    </label>
-                    <p className="text-[9px] text-slate-400 mb-2">
-                      Marque los combustibles que estarán habilitados al inicio de esta cara.
-                    </p>
-                    <div className="space-y-1.5">
-                      {[
-                        { type: 'Regular Unleaded', label: 'Gasolina Regular (87 Oct)', color: 'bg-blue-500' },
-                        { type: 'Premium Unleaded', label: 'Gasolina Premium (95 Oct)', color: 'bg-amber-500' },
-                        { type: 'Diesel', label: 'Diesel Especial', color: 'bg-emerald-500' },
-                        { type: 'Kerosene', label: 'Queroseno Doméstico', color: 'bg-purple-500' }
-                      ].map(item => {
-                        const isChecked = newCaraConfProducts.includes(item.type as FuelType);
-                        return (
-                          <label key={item.type} className="flex items-center justify-between p-1.5 px-2 bg-white rounded border border-neutral-200 cursor-pointer text-xs font-semibold text-slate-705 hover:bg-neutral-50 select-none">
-                            <div className="flex items-center gap-1.5">
-                              <span className={`w-2 h-2 rounded-full ${item.color}`} />
-                              <span>{item.label}</span>
-                            </div>
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={() => {
-                                if (isChecked) {
-                                  if (newCaraConfProducts.length > 1) {
-                                    setNewCaraConfProducts(newCaraConfProducts.filter(p => p !== item.type));
-                                  }
-                                } else {
-                                  setNewCaraConfProducts([...newCaraConfProducts, item.type as FuelType]);
-                                }
-                              }}
-                              className="w-3.5 h-3.5 rounded text-[#355e9e] outline-none cursor-pointer"
-                            />
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={!newCaraConfName.trim() || newCaraConfProducts.length === 0}
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-sans font-bold text-xs py-2 px-3 rounded flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm mt-4"
-                  >
-                    <Plus className="w-4 h-4 text-white" />
-                    <span>Instalar en Pista</span>
-                  </button>
-                </form>
-              </div>
-
               {/* Grid of dispensers with their active mapping */}
-              <div className="col-span-1 lg:col-span-8 space-y-2 max-h-[350px] overflow-y-auto pr-1">
-                <span className="font-extrabold text-xs uppercase text-[#1b365d] block tracking-wider mb-2">
-                  Equipos Activos y Mapeo de Pistolas ({dispensers.length})
-                </span>
+              <div className="col-span-1 lg:col-span-12 space-y-2 max-h-[400px] overflow-y-auto pr-1">
+                <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                  <span className="font-extrabold text-xs uppercase text-[#1b365d] tracking-wider">
+                    Equipos Activos y Mapeo de Pistolas ({dispensers.length})
+                  </span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {/* Sync from PTS-2 */}
+                    <div className="flex items-center gap-1.5">
+                      {pts2SyncResult === 'ok' && (
+                        <span className="text-emerald-700 text-[10px] font-bold flex items-center gap-1">
+                          <Check className="w-3 h-3" /> Sincronizado
+                        </span>
+                      )}
+                      {pts2SyncResult === 'error' && (
+                        <span className="text-red-600 text-[10px] font-bold">Sin respuesta del PTS-2</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleSyncFromPts2}
+                        disabled={pts2Syncing}
+                        className="bg-[#1b365d] hover:bg-[#2a4f8f] disabled:opacity-60 text-white font-sans font-bold text-xs py-1.5 px-3 rounded flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                        title="Leer configuración actual del controlador PTS-2 y mapearla aquí"
+                      >
+                        <Download className={`w-3.5 h-3.5 ${pts2Syncing ? 'animate-bounce' : ''}`} />
+                        <span>{pts2Syncing ? 'Leyendo PTS-2...' : 'Recuperar desde PTS-2'}</span>
+                      </button>
+                    </div>
+                    {onOpenWizard && (
+                      <button
+                        type="button"
+                        onClick={onOpenWizard}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-sans font-bold text-xs py-1.5 px-3 rounded flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Nueva Cara / Dispensador</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
 
                 {dispensers.length === 0 ? (
                   <div className="p-8 text-center text-xs text-slate-400 italic bg-slate-50 border rounded-xl">

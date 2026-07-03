@@ -9,6 +9,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..dependencies import get_pts2_client
 from ..models import Shift, PumpTransaction, SystemSetting, PendingTransaction, ShiftClosure
 from ..schemas import CommandResponse, ShiftCreate, ShiftResponse
 from ..transaction_store import build_shift_closure_totals, serialize_pending_transaction
@@ -49,8 +50,23 @@ def list_shifts(db: Session = Depends(get_db)) -> CommandResponse:
 
 
 @router.post("/close", response_model=CommandResponse, summary="Close active shift")
-def close_shift(request: ShiftCreate, db: Session = Depends(get_db)) -> CommandResponse:
-    """Close the currently active shift and record its final metrics."""
+def close_shift(
+    request: ShiftCreate,
+    db: Session = Depends(get_db),
+    client=Depends(get_pts2_client),
+) -> CommandResponse:
+    """Cierra el turno activo. Si set_closing=true envía ShiftClose con SetClosing al PTS-2 (cierre graceful)."""
+    # Enviar ShiftClose al controlador PTS-2
+    try:
+        pts_payload: dict = {}
+        if request.set_closing:
+            pts_payload["SetClosing"] = True
+        client.request_data("ShiftClose", pts_payload if pts_payload else None)
+    except Exception:
+        pass  # PTS-2 offline: continuar con cierre local
+    finally:
+        client.close()
+
     # Try to find the active shift by ID or get the latest active shift
     active_shift = db.query(Shift).filter(
         Shift.shift_id == request.shift_id,
@@ -96,6 +112,7 @@ def close_shift(request: ShiftCreate, db: Session = Depends(get_db)) -> CommandR
         payment_breakdown=totals["payment_breakdown"],
         pending_count=0,
         closure_status="Closed",
+        counter_breakdown=request.counter_breakdown or [],
     )
     db.add(shift_closure)
 
@@ -144,6 +161,7 @@ def close_shift(request: ShiftCreate, db: Session = Depends(get_db)) -> CommandR
             "payment_breakdown": shift_closure.payment_breakdown or [],
             "pending_count": shift_closure.pending_count,
             "closure_status": shift_closure.closure_status,
+            "counter_breakdown": shift_closure.counter_breakdown or [],
         },
         "totals": totals,
         "new_shift": {

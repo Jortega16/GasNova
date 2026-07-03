@@ -10,17 +10,19 @@ import CaraCard from './components/CaraCard';
 import RecentTransactions from './components/RecentTransactions';
 import { DispenserState, TankState, PriceConfig, ScheduledPrice, Transaction, ShiftAlert, ShiftDetails, FuelType, NozzleState, PaymentMethod, UserProfile, NozzleTransaction, PumpStatus } from './types';
 import { INITIAL_DISPENSERS, INITIAL_TANKS, INITIAL_PRICES, INITIAL_SCHEDULED_PRICES, INITIAL_SHIFTS, INITIAL_USERS } from './data';
-import { AlertOctagon, Fuel, Printer, Lock, Unlock, RefreshCw } from 'lucide-react';
+import { AlertOctagon, Fuel, Printer, Lock, Unlock, RefreshCw, Settings } from 'lucide-react';
 import LoginScreen from './components/LoginScreen';
 import { api, printReceiptWindow } from './api';
 import SimUniPumpPanel from './components/SimUniPumpPanel';
 import QuickSwitchModal from './components/QuickSwitchModal';
 import PreAuthDialog from './components/PreAuthDialog';
-import AddCaraDialog from './components/AddCaraDialog';
+import PumpConfigWizard from './components/PumpConfigWizard';
 import ShiftReceiptModal from './components/ShiftReceiptModal';
+import ShiftCloseConfirmModal from './components/ShiftCloseConfirmModal';
 import NozzleTransactionsModal from './components/NozzleTransactionsModal';
 import { useSystemSettings } from './hooks/useSystemSettings';
 import { useVisibilityPolling } from './hooks/useVisibilityPolling';
+import { usePermissions } from './hooks/usePermissions';
 import { litersToDisplay, displayToLiters, unitLabel, formatVolume } from './utils/units';
 
 const PriceConfigTab = lazy(() => import('./components/PriceConfigTab'));
@@ -150,12 +152,16 @@ export default function App() {
   const completingNozzlesRef = useRef<Set<string>>(new Set());
 
   // Shift metadata state
-  const [shiftDetails, setShiftDetails] = useState<ShiftDetails>({
-    shiftId: 'SH-20240527-01',
-    operatorName: 'John Doe',
-    startTime: '22024-05-27 06:00 AM', // corrected to look like photo
-    endTime: '2024-05-27 02:00 PM',
-    status: 'Active',
+  const [shiftDetails, setShiftDetails] = useState<ShiftDetails>(() => {
+    const now = new Date();
+    const datePart = now.toISOString().slice(0, 10).replace(/-/g, '');
+    return {
+      shiftId: `SH-${datePart}-01`,
+      operatorName: 'John Doe',
+      startTime: now.toLocaleString('es-GT', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }),
+      endTime: '',
+      status: 'Active',
+    };
   });
   const [nextShiftData, setNextShiftData] = useState<any>(null);
 
@@ -168,8 +174,6 @@ export default function App() {
 
   // Create Cara/Dispenser Dialog modal state
   const [isAddCaraModalOpen, setIsAddCaraModalOpen] = useState<boolean>(false);
-  const [newCaraName, setNewCaraName] = useState<string>('');
-  const [newCaraProducts, setNewCaraProducts] = useState<FuelType[]>(['Regular Unleaded', 'Premium Unleaded', 'Diesel']);
 
   // Configuración de Turnos y Métodos de Pago
   const [shiftCount, setShiftCount] = useState<number>(3);
@@ -183,6 +187,8 @@ export default function App() {
     saveSetting: saveSystemSetting,
     refetch: fetchSystemSettings,
   } = useSystemSettings();
+
+  const { can } = usePermissions(currentUser);
 
   const unitMeasure = systemSettings.unitMeasure;
   const currencySymbol = systemSettings.currencySymbol;
@@ -307,59 +313,66 @@ export default function App() {
               const lastVol = pumpData.last_volume ?? nozzle.currentVolume;
               const lastAmt = pumpData.last_amount ?? nozzle.currentAmount;
 
-              // If it was a prepaid transaction, automatically close and complete it
-              if (nozzle.status === 'Prepaid') {
-                setTimeout(() => {
-                  const trxId = `TRX-${Math.floor(200 + Math.random() * 800)}`;
+              // Solo actuar si aún no capturamos este EndOfTransaction
+              // (evitar que el mismo evento dispare el capture múltiples veces
+              // mientras el polling sigue llegando en estado EndOfTransaction)
+              if (nozzle.ptsTransactionId) {
+                // Ya capturado en un tick anterior, no hacer nada
+                return nozzle;
+              }
+
+              // ── Capture real de la transacción del PTS-2 (gap 1 + 3) ──────────
+              // Async fuera del render: obtiene el ID real de la transacción,
+              // guarda en pending_transactions con ese ID, y cierra en el PTS-2.
+              const pumpIdCapture = dispenser.id;
+              const isPrep = nozzle.status === 'Prepaid';
+              const nozzleFuelType = nozzle.fuelType;
+
+              setTimeout(async () => {
+                // 1. Captura con ID real del PTS-2
+                const captureRes = await api.capturePendingTransaction(pumpIdCapture);
+                const realTrxId = captureRes.ok && captureRes.data
+                  ? captureRes.data.trx_id
+                  : `TRX-${pumpIdCapture}-${Date.now()}`;
+
+                // 2. Cierra la transacción en el PTS-2 (gap 2) —
+                //    libera la bomba sin esperar al cobro del cajero
+                api.closeTransaction(pumpIdCapture);
+
+                // Propaga el ID real al estado de la nozzle para que el cobro lo use
+                setDispensers(prev => prev.map(d => d.id === pumpIdCapture ? {
+                  ...d,
+                  nozzles: d.nozzles.map(n => n.fuelType === nozzleFuelType ? {
+                    ...n,
+                    ptsTransactionId: realTrxId,
+                  } : n),
+                } : d));
+
+                if (isPrep) {
+                  // Prepago: completa automáticamente la venta
+                  const vol = captureRes.ok && captureRes.data ? captureRes.data.volume : lastVol;
+                  const amt = captureRes.ok && captureRes.data ? captureRes.data.amount : lastAmt;
+
+                  completeFuelingJob(pumpIdCapture, vol, amt, nozzleFuelType, 'Cash', realTrxId);
+
                   const now = new Date();
                   const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                  
-                  // Add directly to shift transactions list
-                  const formatted: Transaction = {
-                    id: trxId,
-                    dateTime: `Hoy ${timeStr}`,
-                    pumpId: dispenser.id,
-                    pumpName: `Cara ${dispenser.id} (${nozzle.fuelType === 'Regular Unleaded' ? 'Regular' : nozzle.fuelType === 'Premium Unleaded' ? 'Super' : 'Diesel'})`,
-                    volume: lastVol,
-                    amount: lastAmt,
-                    fuelType: nozzle.fuelType,
-                    paymentType: 'Cash'
-                  };
-                  setTransactions(prev => [formatted, ...prev]);
-
-                  // Persist to PostgreSQL database
-                  persistTransaction(dispenser.id, trxId, nozzle.fuelType, lastVol, lastAmt, 'Cash');
-
-                  // Deduct fuel from tank level
-                  setTanks(prevTanks => prevTanks.map(tank => {
-                    if (tank.fuelType === nozzle.fuelType) {
-                      const nextLvl = Math.max(0, tank.currentLevel - lastVol);
-                      return {
-                        ...tank,
-                        currentLevel: parseFloat(nextLvl.toFixed(1)),
-                        status: nextLvl < 3500 ? 'Low Level Alert' : 'OK'
-                      };
-                    }
-                    return tank;
-                  }));
-
-                  // Close transaction on backend
-                  api.closeTransaction(dispenser.id);
-
-                  // Add shift alert
                   const customAlert: ShiftAlert = {
                     id: `AL-PAID-${Math.random()}`,
                     dateTime: `Hoy ${timeStr}`,
-                    pumpName: `Cara ${dispenser.id}`,
-                    volume: `${lastVol.toFixed(2)} L`,
-                    amount: `$${lastAmt.toFixed(2)}`,
+                    pumpName: `Cara ${pumpIdCapture}`,
+                    volume: `${vol.toFixed(2)} L`,
+                    amount: `$${amt.toFixed(2)}`,
                     paymentType: 'Cash',
-                    message: `✓ Pago Recibido (Prepago): Cobro de $${lastAmt.toFixed(2)} liquidado para la Cara ${dispenser.id} (${nozzle.fuelType}).`,
-                    isCustomNote: true
+                    message: `✓ Prepago completado: $${amt.toFixed(2)} — Cara ${pumpIdCapture} (${nozzleFuelType}) — Trx ${realTrxId}`,
+                    isCustomNote: true,
                   };
                   setAlerts(prev => [customAlert, ...prev]);
-                }, 10);
+                }
+              }, 50);
 
+              if (isPrep) {
+                // Optimista: regresa a Idle inmediatamente en la UI
                 return {
                   ...nozzle,
                   status: 'Idle',
@@ -368,16 +381,19 @@ export default function App() {
                   progressPercent: 0,
                   limitAmount: undefined,
                   isPostpaid: false,
+                  ptsTransactionId: '__capturing__',
                 };
               }
 
-              // Otherwise (e.g. postpaid), show Unpaid (awaiting payment/close)
+              // Postpay/libre: queda en Unpaid hasta que el cajero cobra
+              // El ptsTransactionId se propagará cuando termine el capture async
               return {
                 ...nozzle,
                 status: 'Unpaid',
                 currentVolume: lastVol,
                 currentAmount: lastAmt,
                 progressPercent: 100,
+                ptsTransactionId: '__capturing__',
               };
             }
 
@@ -393,11 +409,12 @@ export default function App() {
             }
 
             if (pts2Status === 'Idle' && nozzle.status === 'Unpaid') {
-              // The nozzle was Unpaid but now the pump is Idle (i.e. hung up).
-              // Move the transaction to the pending transactions queue (venta en cola) and set nozzle status to Idle.
+              // Bomba volvió a Idle mientras había un Unpaid sin cobrar (pistola colgada manualmente).
+              // La transacción ya fue cerrada en EndOfTransaction; solo mueve el pendiente a cola.
+              const trxId = nozzle.ptsTransactionId && nozzle.ptsTransactionId !== '__capturing__'
+                ? nozzle.ptsTransactionId : undefined;
               setTimeout(() => {
-                completeFuelingJob(dispenser.id, nozzle.currentVolume, nozzle.currentAmount, nozzle.fuelType);
-                api.closeTransaction(dispenser.id);
+                completeFuelingJob(dispenser.id, nozzle.currentVolume, nozzle.currentAmount, nozzle.fuelType, undefined, trxId);
               }, 10);
 
               return {
@@ -408,6 +425,7 @@ export default function App() {
                 progressPercent: 0,
                 isPostpaid: false,
                 limitAmount: undefined,
+                ptsTransactionId: undefined,
               };
             }
 
@@ -460,7 +478,9 @@ export default function App() {
   // Cierre de Turno states
   const [isShiftClosing, setIsShiftClosing] = useState<boolean>(false);
   const [pendingMeters, setPendingMeters] = useState<{ [key: string]: string } | null>(null);
+  const [pendingMechCounters, setPendingMechCounters] = useState<Record<number, { vol: number; amt: number }>>({});
   const [showShiftReceipt, setShowShiftReceipt] = useState<boolean>(false);
+  const [showShiftCloseConfirm, setShowShiftCloseConfirm] = useState<boolean>(false);
 
   // Triggered when manual sync is requested from the footer
   const handleManualSync = () => {
@@ -597,6 +617,7 @@ export default function App() {
         nozzleNumber,
         preauthMode === 'Limit' ? preauthLimitType : undefined,
         preauthMode === 'Limit' ? finalLimit : undefined,
+        shiftDetails.shiftId,
       );
     }
 
@@ -1000,47 +1021,9 @@ export default function App() {
     setAlerts(prev => [resetNote, ...prev]);
   };
 
-  // Add Dispenser dynamically (opens customize creation modal)
+  // Navega a la pestaña de Gestión donde está el panel de caras
   const handleAddDispenser = () => {
-    const nextId = dispensers.length > 0 ? Math.max(...dispensers.map(d => d.id)) + 1 : 1;
-    setNewCaraName(`Cara ${nextId}`);
-    setNewCaraProducts(['Regular Unleaded', 'Premium Unleaded', 'Diesel']);
-    setIsAddCaraModalOpen(true);
-  };
-
-  // Confirm creation of Cara
-  const handleConfirmAddCara = () => {
-    if (!newCaraName.trim()) return;
-    if (newCaraProducts.length === 0) return;
-
-    const nextId = dispensers.length > 0 ? Math.max(...dispensers.map(d => d.id)) + 1 : 1;
-    const newDispenser: DispenserState = {
-      id: nextId,
-      name: newCaraName.trim(),
-      nozzles: newCaraProducts.map(fuelType => ({
-        fuelType,
-        status: 'Idle',
-        currentAmount: 0.0,
-        currentVolume: 0.0,
-        progressPercent: 0
-      }))
-    };
-    setDispensers(prev => [...prev, newDispenser]);
-
-    // Note log
-    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const alertNote: ShiftAlert = {
-      id: `AL-ADD-${Math.random()}`,
-      dateTime: `Hoy ${timeStr}`,
-      pumpName: newCaraName.trim(),
-      volume: '—',
-      amount: '—',
-      paymentType: 'System',
-      message: `NUEVO DISPENSADOR INSTALADO: Se ha habilitado la ${newCaraName.trim()} con un total de ${newCaraProducts.length} mangueras (${newCaraProducts.map(fp => fp.split(' ')[0]).join(', ')}).`,
-      isCustomNote: true
-    };
-    setAlerts(prev => [alertNote, ...prev]);
-    setIsAddCaraModalOpen(false);
+    setActiveTab('settings');
   };
 
   // Toggle Dispenser Global Block Handler
@@ -1125,12 +1108,13 @@ export default function App() {
 
   // Collect Postpaid Payment
   const handleCollectPayment = (
-    dispenserId: number, 
-    fuelType: FuelType, 
+    dispenserId: number,
+    fuelType: FuelType,
     paymentType: 'Credit Card' | 'Debit Card' | 'Cash' | 'Fleet Card'
   ) => {
     let collectedAmount = 0;
     let collectedVolume = 0;
+    let capturedTrxId: string | undefined;
 
     setDispensers(prev => prev.map(d => {
       if (d.id === dispenserId) {
@@ -1140,13 +1124,17 @@ export default function App() {
             if (n.fuelType === fuelType && n.status === 'Unpaid') {
               collectedAmount = n.currentAmount;
               collectedVolume = n.currentVolume;
+              // Recoge el ID real capturado en EndOfTransaction
+              capturedTrxId = n.ptsTransactionId && n.ptsTransactionId !== '__capturing__'
+                ? n.ptsTransactionId : undefined;
               return {
                 ...n,
                 status: 'Idle',
                 currentAmount: 0.0,
                 currentVolume: 0.0,
                 progressPercent: 0,
-                isPostpaid: false
+                isPostpaid: false,
+                ptsTransactionId: undefined,
               };
             }
             return n;
@@ -1158,9 +1146,11 @@ export default function App() {
 
     // Register transaction with chosen payment method
     if (collectedAmount > 0) {
-      completeFuelingJob(dispenserId, collectedVolume, collectedAmount, fuelType, paymentType);
-      // Close transaction on backend
-      api.closeTransaction(dispenserId);
+      // Usa el ID real del PTS-2 si está disponible (gap 3 — evita duplicados con WebSocket)
+      completeFuelingJob(dispenserId, collectedVolume, collectedAmount, fuelType, paymentType, capturedTrxId);
+      // La transacción ya fue cerrada automáticamente al detectar EndOfTransaction (gap 2);
+      // solo cerramos de nuevo si no hubo capture exitoso
+      if (!capturedTrxId) api.closeTransaction(dispenserId);
       
       // Extra confirmation alert log
       const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -2125,7 +2115,7 @@ export default function App() {
     }
   }, [quickSwitchPin, pendingSwitchUser]);
 
-  const executeShiftClosureFinal = (meters: { [key: string]: string }) => {
+  const executeShiftClosureFinal = (meters: { [key: string]: string }, mechCounters: Record<number, { vol: number; amt: number }> = {}) => {
     const expiredTransactions: Transaction[] = [];
 
     // 1. Block all dispensers and collect pending transfers
@@ -2203,6 +2193,14 @@ export default function App() {
 
     // Trigger physical print of shift closure
     const closedShiftName = getShiftNameFromId(shiftDetails.shiftId, shiftBrackets);
+    const counterBreakdown = dispensers.map(d => ({
+      pump_id:        d.id,
+      pump_name:      d.name,
+      system_volume:  allShiftTransactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.volume, 0),
+      mech_volume:    mechCounters[d.id]?.vol ?? 0,
+      mech_amount:    mechCounters[d.id]?.amt ?? 0,
+      dispatch_count: allShiftTransactions.filter(t => t.pumpId === d.id).length,
+    }));
     api.printClosure({
       shift_id:          shiftDetails.shiftId,
       shift_name:        closedShiftName,
@@ -2213,13 +2211,27 @@ export default function App() {
       total_volume:      totalVolume,
       transaction_count: transactionCount,
       fuel_breakdown:    fuelBreakdown,
-      payment_breakdown: paymentBreakdown
+      payment_breakdown: paymentBreakdown,
+      counter_breakdown: counterBreakdown,
     }).catch(err => console.error("Error printing physical closure:", err));
 
-    api.closeShift(shiftDetails.shiftId, shiftDetails.operatorName, endTimeStr).then(res => {
+    api.closeShift(shiftDetails.shiftId, shiftDetails.operatorName, endTimeStr, counterBreakdown).then(res => {
+      // Desbloquear todas las caras al confirmar el cierre en el backend
+      setDispensers(prev => prev.map(d => ({
+        ...d,
+        isBlocked: false,
+        nozzles: d.nozzles.map(n => ({
+          ...n,
+          status: 'Idle' as PumpStatus,
+          currentAmount: 0,
+          currentVolume: 0,
+          progressPercent: 0,
+          pendingTransactions: [],
+        })),
+      })));
+
       if (res.ok && res.data) {
         setNextShiftData(res.data.new_shift);
-        // Automatically print next shift ticket!
         if (res.data.new_shift) {
           const nextShiftName = getShiftNameFromId(res.data.new_shift.shift_id, shiftBrackets);
           api.printNextShift({
@@ -2261,19 +2273,19 @@ export default function App() {
     setShowShiftReceipt(true);
   };
 
-  const handleCloseShift = (manualMeters: { [key: string]: string }) => {
+  const handleCloseShift = (manualMeters: { [key: string]: string }, mechCounters: Record<number, { vol: number; amt: number }> = {}) => {
     // Check if any dispenser has an active nozzle in 'Dispensing' state
     const currentlyDispensingCount = dispensers.reduce((cnt, d) => {
       return cnt + d.nozzles.filter(n => n.status === 'Dispensing').length;
     }, 0);
 
-    // Save manual meters entered by the operator
     setPendingMeters(manualMeters);
+    setPendingMechCounters(mechCounters);
 
     if (currentlyDispensingCount > 0) {
       // Enter "Waiting to complete" state
       setIsShiftClosing(true);
-      
+
       const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const customAlert: ShiftAlert = {
         id: `AL-SH-PRE-${Math.random()}`,
@@ -2287,8 +2299,7 @@ export default function App() {
       };
       setAlerts(prev => [customAlert, ...prev]);
     } else {
-      // No active dispensing. Complete close procedure immediately!
-      executeShiftClosureFinal(manualMeters);
+      executeShiftClosureFinal(manualMeters, mechCounters);
     }
   };
 
@@ -2301,7 +2312,7 @@ export default function App() {
     }, 0);
 
     if (currentlyDispensingCount === 0) {
-      executeShiftClosureFinal(pendingMeters || {});
+      executeShiftClosureFinal(pendingMeters || {}, pendingMechCounters);
     }
   }, [dispensers, isShiftClosing, pendingMeters]);
 
@@ -2588,6 +2599,15 @@ export default function App() {
         return (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6" id="dashboard-tab-layout">
             <div className="col-span-1 lg:col-span-9 space-y-4">
+              {!isApiOnline && (
+                <div className="flex items-center gap-3 bg-red-950/80 border border-red-600/60 rounded-xl px-4 py-3 shadow-lg animate-pulse">
+                  <AlertOctagon className="w-5 h-5 text-red-400 shrink-0" />
+                  <div>
+                    <p className="text-sm font-bold text-red-300">Sin conexión con el servidor API</p>
+                    <p className="text-xs text-red-400/80">Los datos mostrados pueden estar desactualizados. Verifique que el backend esté corriendo.</p>
+                  </div>
+                </div>
+              )}
               <div className="flex items-center justify-between bg-gradient-to-r from-slate-800 to-slate-900 rounded-2xl px-4 py-3 border border-slate-700/50 shadow-lg">
                 <div className="flex items-center gap-3">
                   <div className="p-2 rounded-xl bg-blue-500/10 border border-blue-500/20">
@@ -2600,34 +2620,48 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleCloseShift({})}
-                    className="bg-gradient-to-b from-rose-500 to-rose-700 hover:from-rose-400 hover:to-rose-600 text-white font-sans font-bold text-[11px] py-2 px-3.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-lg transition-all"
-                    title="Cerrar el turno directamente desde el panel principal"
-                  >
-                    <Lock className="w-3.5 h-3.5" />
-                    <span>Cerrar Turno</span>
-                  </button>
+                  {can('settings.view') && (
+                    <button
+                      onClick={handleAddDispenser}
+                      className="bg-slate-700/80 hover:bg-emerald-700/80 text-slate-300 hover:text-white font-semibold text-[11px] py-2 px-3.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow border border-slate-600/40 hover:border-emerald-600/60 transition-all"
+                      title="Configurar nueva cara/dispensador en el PTS-2"
+                    >
+                      <Settings className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Nueva Cara</span>
+                    </button>
+                  )}
+                  {can('shift.close') && (
+                    <button
+                      onClick={() => setShowShiftCloseConfirm(true)}
+                      className="bg-gradient-to-b from-rose-500 to-rose-700 hover:from-rose-400 hover:to-rose-600 text-white font-sans font-bold text-[11px] py-2 px-3.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-lg transition-all"
+                      title="Cerrar el turno directamente desde el panel principal"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                      <span>Cerrar Turno</span>
+                    </button>
+                  )}
 
-                  <button
-                    onClick={() => {
-                      setDispensers(prev => prev.map(d => d.id === 3 ? {
-                        ...d,
-                        nozzles: d.nozzles.map(n => n.fuelType === 'Regular Unleaded' ? {
-                          ...n,
-                          status: 'Dispensing',
-                          currentAmount: 2.50,
-                          currentVolume: 0.60,
-                          progressPercent: 15
-                        } : n)
-                      } : d));
-                    }}
-                    className="bg-slate-700/80 hover:bg-slate-600/80 text-slate-300 hover:text-white font-semibold text-[11px] py-2 px-3.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow border border-slate-600/40 transition-all"
-                    title="Simular auto-llenado"
-                  >
-                    <Fuel className="w-3.5 h-3.5 text-blue-400" />
-                    <span>Demo Cara 3</span>
-                  </button>
+                  {isSimulating && (
+                    <button
+                      onClick={() => {
+                        setDispensers(prev => prev.map(d => d.id === 3 ? {
+                          ...d,
+                          nozzles: d.nozzles.map(n => n.fuelType === 'Regular Unleaded' ? {
+                            ...n,
+                            status: 'Dispensing',
+                            currentAmount: 2.50,
+                            currentVolume: 0.60,
+                            progressPercent: 15
+                          } : n)
+                        } : d));
+                      }}
+                      className="bg-slate-700/80 hover:bg-slate-600/80 text-slate-300 hover:text-white font-semibold text-[11px] py-2 px-3.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow border border-slate-600/40 transition-all"
+                      title="Simular auto-llenado (solo en modo simulación)"
+                    >
+                      <Fuel className="w-3.5 h-3.5 text-blue-400" />
+                      <span>Demo Cara 3</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -2687,6 +2721,9 @@ export default function App() {
                     enabledPaymentMethods={enabledPaymentMethods}
                     paymentMethods={paymentMethods}
                     onStopPump={handleStopPump}
+                    canBlock={can('pump.block')}
+                    canPreauth={can('pump.preauth')}
+                    canEmergencyStop={can('pump.emergency_stop')}
                     onPressNozzle={(dispenserId, fuelType) => {
                       setSelectedNozzleForTrx({ dispenserId, fuelType });
                     }}
@@ -2862,6 +2899,7 @@ export default function App() {
                 onRefillTank={handleRefillTank}
                 onAddTank={handleAddTank}
                 setTanks={setTanks}
+                isSimulating={isSimulating}
               />
             </Suspense>
           </div>
@@ -2898,6 +2936,7 @@ export default function App() {
               dispensers={dispensers}
               setDispensers={setDispensers}
               onSettingsChange={fetchSystemSettings}
+              onOpenWizard={() => setIsAddCaraModalOpen(true)}
             />
           </Suspense>
         );
@@ -2978,6 +3017,7 @@ export default function App() {
         allUsers={users}
         onLogout={handleLogout}
         onQuickSwitchUser={handleQuickSwitchInitiate}
+        can={can}
       />
 
       {/* Primary Context Workspace container */}
@@ -3123,15 +3163,16 @@ export default function App() {
         onCancel={() => setPreauthorizingPumpId(null)}
       />
 
-      <AddCaraDialog
+      <PumpConfigWizard
         isOpen={isAddCaraModalOpen}
-        onConfirm={(name, products) => {
-          const nextId = dispensers.length > 0 ? Math.max(...dispensers.map(d => d.id)) + 1 : 1;
+        nextPumpId={dispensers.length > 0 ? Math.max(...dispensers.map(d => d.id)) + 1 : 1}
+        onSuccess={({ id, name, nozzlesCount }) => {
+          const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
           const newDispenser: DispenserState = {
-            id: nextId,
-            name: name.trim(),
-            nozzles: products.map(fuelType => ({
-              fuelType,
+            id,
+            name,
+            nozzles: Array.from({ length: nozzlesCount }, (_, i) => ({
+              fuelType: fuelGrades[i] || 'Regular Unleaded',
               status: 'Idle' as PumpStatus,
               currentAmount: 0.0,
               currentVolume: 0.0,
@@ -3144,27 +3185,38 @@ export default function App() {
           const alertNote: ShiftAlert = {
             id: `AL-ADD-${Math.random()}`,
             dateTime: `Hoy ${timeStr}`,
-            pumpName: name.trim(),
+            pumpName: name,
             volume: '—',
             amount: '—',
             paymentType: 'System',
-            message: `NUEVO DISPENSADOR INSTALADO: Se ha habilitado ${name.trim()} con ${products.length} mangueras (${products.map(fp => fp.split(' ')[0]).join(', ')}).`,
+            message: `NUEVO DISPENSADOR INSTALADO: Se ha habilitado ${name} con ${nozzlesCount} mangueras configuradas en el PTS-2.`,
             isCustomNote: true,
           };
           setAlerts(prev => [alertNote, ...prev]);
           setIsAddCaraModalOpen(false);
         }}
-        onCancel={() => {
-          setIsAddCaraModalOpen(false);
-          setNewCaraName('');
-          setNewCaraProducts(['Regular Unleaded', 'Premium Unleaded', 'Diesel']);
+        onCancel={() => setIsAddCaraModalOpen(false)}
+      />
+
+      <ShiftCloseConfirmModal
+        show={showShiftCloseConfirm}
+        shiftDetails={shiftDetails}
+        transactions={transactions}
+        dispensers={dispensers}
+        currencySymbol={currencySymbol}
+        unitMeasure={unitMeasure}
+        onConfirm={(mechCounters) => {
+          setShowShiftCloseConfirm(false);
+          handleCloseShift({}, mechCounters);
         }}
+        onCancel={() => setShowShiftCloseConfirm(false)}
       />
 
       <ShiftReceiptModal
         show={showShiftReceipt}
         shiftDetails={shiftDetails}
         transactions={transactions}
+        dispensers={dispensers}
         unitMeasure={unitMeasure}
         currencySymbol={currencySymbol}
         pendingMeters={pendingMeters}

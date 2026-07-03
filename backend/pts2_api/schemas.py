@@ -24,16 +24,35 @@ class AuthorizeRequest(ApiModel):
         examples=[1],
         description="Número de boquilla del surtidor para autorizar la venta.",
     )
-    type: Literal["Volume", "Amount"] | None = Field(
+    type: Literal["Volume", "Amount", "FullTank"] | None = Field(
         default=None,
         examples=["Volume"],
-        description="Tipo de autorizacion: por volumen (Volume) o por monto (Amount).",
+        description="Tipo de autorización: Volume, Amount o FullTank (jsonPTS PumpAuthorize.Type).",
     )
     dose: float | None = Field(
         default=None,
         gt=0,
         examples=[20],
-        description="Cantidad a autorizar: volumen en litros o monto en moneda local.",
+        description="Cantidad a autorizar: volumen en litros o monto en moneda local (jsonPTS PumpAuthorize.Dose).",
+    )
+    price: float | None = Field(
+        default=None,
+        gt=0,
+        description="Precio por unidad a aplicar en la autorización (jsonPTS PumpAuthorize.Price).",
+    )
+    tag: str | None = Field(
+        default=None,
+        max_length=32,
+        description="Identificador de tag RFID usado para autorizar la bomba (jsonPTS PumpAuthorize.Tag, hasta 32 hex).",
+    )
+    auto_close_transaction: bool = Field(
+        default=False,
+        serialization_alias="AutoCloseTransaction",
+        description="Si es true, el PTS-2 cierra la transacción automáticamente al terminar el despacho (jsonPTS PumpAuthorize.AutoCloseTransaction).",
+    )
+    shift_id: str | None = Field(
+        default=None,
+        description="ID del turno activo en el momento de la autorización. Se propaga al pending y a la transacción final.",
     )
 
     @field_validator("dose")
@@ -114,6 +133,18 @@ class ShiftCreate(ApiModel):
     start_time: str | None = None
     end_time: str | None = None
     status: str = "Active"
+    counter_breakdown: list[Any] | None = Field(
+        default=None,
+        description="Contadores mecánicos por cara al momento del cierre.",
+    )
+    set_closing: bool = Field(
+        default=False,
+        description=(
+            "Cierre graceful (jsonPTS ShiftClose.SetClosing): permite que las bombas terminen "
+            "despachos en curso antes de cerrar el turno. Mientras está activo no se permiten "
+            "nuevas autorizaciones."
+        ),
+    )
 
 
 class ShiftResponse(ApiModel):

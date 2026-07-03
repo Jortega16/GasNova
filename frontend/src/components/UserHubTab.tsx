@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
 import { UserProfile, UserRole } from '../types';
-import { 
-  Users, 
-  UserPlus, 
-  Edit2, 
-  Trash2, 
-  Key, 
-  Eye, 
-  EyeOff, 
+import { PERMISSION_GROUPS, PERMISSION_LABELS, can, ALL_ROLES } from '../permissions';
+import {
+  Users,
+  UserPlus,
+  Edit2,
+  Trash2,
+  Key,
+  Eye,
+  EyeOff,
+  ShieldCheck,
   Shield, 
   Check, 
   X, 
@@ -614,6 +616,93 @@ export default function UserHubTab({
         </div>
 
       </div>
+
+      {/* ── PERMISSIONS MATRIX ─────────────────────────────────────────── */}
+      <div className="mt-8 bg-white rounded-xl shadow border border-neutral-200 overflow-hidden" id="roles-permissions-matrix">
+        <div className="bg-slate-50 border-b border-neutral-200 px-6 py-4 flex items-center gap-3">
+          <ShieldCheck className="w-5 h-5 text-[#355e9e]" />
+          <div>
+            <h2 className="font-sans font-bold text-base text-slate-800">Matriz de Roles y Permisos</h2>
+            <p className="text-[11px] text-slate-500 font-sans mt-0.5">Permisos asignados por rol en el sistema GasNova POS.</p>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs font-sans border-collapse">
+            <thead>
+              <tr className="bg-[#0b284e] text-white">
+                <th className="text-left px-5 py-3 font-semibold text-[11px] uppercase tracking-wider w-64">Permiso</th>
+                {ALL_ROLES.map(role => (
+                  <th key={role} className="text-center px-4 py-3 font-semibold text-[11px] uppercase tracking-wider min-w-[110px]">
+                    <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
+                      role === 'Admin'      ? 'bg-red-600' :
+                      role === 'Manager'    ? 'bg-blue-600' :
+                      role === 'Supervisor' ? 'bg-purple-600' :
+                                             'bg-emerald-700'
+                    }`}>
+                      { role === 'Admin' ? 'Administrador' :
+                        role === 'Manager' ? 'Gerente' :
+                        role === 'Supervisor' ? 'Supervisor' : 'Operador' }
+                    </span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {PERMISSION_GROUPS.map((group, gi) => (
+                <React.Fragment key={group.label}>
+                  <tr className="bg-slate-100 border-t border-neutral-300">
+                    <td colSpan={ALL_ROLES.length + 1} className="px-5 py-1.5 font-bold text-[10px] uppercase tracking-widest text-slate-500">
+                      {group.label}
+                    </td>
+                  </tr>
+                  {group.perms.map((perm, pi) => (
+                    <tr
+                      key={perm}
+                      className={`border-b border-neutral-100 ${(gi + pi) % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-blue-50/40 transition-colors`}
+                    >
+                      <td className="px-5 py-2 text-slate-700 font-medium">{PERMISSION_LABELS[perm]}</td>
+                      {ALL_ROLES.map(role => {
+                        const allowed = can(role, perm);
+                        return (
+                          <td key={role} className="text-center px-4 py-2">
+                            {allowed ? (
+                              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100 text-emerald-600" title="Permitido">
+                                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none">
+                                  <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                </svg>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-50 text-red-400" title="No permitido">
+                                <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none">
+                                  <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                                </svg>
+                              </span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="px-6 py-3 bg-slate-50 border-t border-neutral-200 flex items-center gap-4 text-[11px] text-slate-500">
+          <span className="flex items-center gap-1.5">
+            <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-emerald-100 text-emerald-600 text-[9px]">✓</span>
+            Permitido
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-red-50 text-red-400 text-[9px]">✕</span>
+            No permitido
+          </span>
+          <span className="ml-auto font-sans text-slate-400">Los permisos se aplican en tiempo real según el usuario activo en sesión.</span>
+        </div>
+      </div>
+
     </div>
   );
 }

@@ -24,6 +24,7 @@ import {
   Terminal
 } from 'lucide-react';
 import { UserProfile } from '../types';
+import type { Permission } from '../permissions';
 
 interface HeaderProps {
   activeTab: string;
@@ -34,6 +35,7 @@ interface HeaderProps {
   allUsers: UserProfile[];
   onLogout: () => void;
   onQuickSwitchUser: (user: UserProfile) => void;
+  can?: (permission: Permission) => boolean;
 }
 
 
@@ -44,35 +46,43 @@ const roleTranslations: { [key: string]: string } = {
   Operator: 'Operador'
 };
 
-export default function Header({ 
-  activeTab, 
-  setActiveTab, 
-  searchQuery, 
+export default function Header({
+  activeTab,
+  setActiveTab,
+  searchQuery,
   setSearchQuery,
   currentUser,
   allUsers,
   onLogout,
-  onQuickSwitchUser
+  onQuickSwitchUser,
+  can = () => true,
 }: HeaderProps) {
   const [showUserDropdown, setShowUserDropdown] = useState(false);
 
-  const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'priceConfig', label: 'Config. Precios', icon: DollarSign },
-    { id: 'shiftReport', label: 'Reporte Turno', icon: FileText },
-    { id: 'transactions', label: 'Ventas Diarias', icon: TrendingUp },
-    { id: 'monthlySummary', label: 'Resumen Mensual', icon: BarChart3 },
-    { id: 'cards', label: 'Gestión Tarjetas', icon: CreditCard },
-    { id: 'inventory', label: 'Inventario', icon: Package },
-    { id: 'users', label: 'Usuarios / Roles', icon: Users },
-    { id: 'settings', label: 'Ajustes', icon: Settings },
-    { id: 'pts2RawApi', label: 'Simulador PTS-2', icon: Terminal },
-    { id: 'help', label: 'Ayuda', icon: HelpCircle },
+  const allNavItems = [
+    { id: 'dashboard',      label: 'Dashboard',        icon: LayoutDashboard, permission: 'dashboard.view' as Permission },
+    { id: 'priceConfig',    label: 'Config. Precios',  icon: DollarSign,      permission: 'prices.view' as Permission },
+    { id: 'shiftReport',    label: 'Reporte Turno',    icon: FileText,        permission: 'shift.report' as Permission },
+    { id: 'transactions',   label: 'Ventas Diarias',   icon: TrendingUp,      permission: 'reports.daily' as Permission },
+    { id: 'monthlySummary', label: 'Resumen Mensual',  icon: BarChart3,       permission: 'reports.monthly' as Permission },
+    { id: 'cards',          label: 'Gestión Tarjetas', icon: CreditCard,      permission: 'cards.manage' as Permission },
+    { id: 'inventory',      label: 'Inventario',       icon: Package,         permission: 'inventory.view' as Permission },
+    { id: 'users',          label: 'Usuarios / Roles', icon: Users,           permission: 'users.view' as Permission },
+    { id: 'settings',       label: 'Ajustes',          icon: Settings,        permission: 'settings.view' as Permission },
+    { id: 'pts2RawApi',     label: 'Simulador PTS-2',  icon: Terminal,        permission: 'simulator.access' as Permission },
+    { id: 'help',           label: 'Ayuda',            icon: HelpCircle,      permission: null },
   ];
 
-  // Helper to extract initials
-  const getInitials = (name: string) => {
-    return name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+  const navItems = allNavItems.filter(item => item.permission === null || can(item.permission));
+
+  const getInitials = (name: string) =>
+    name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+
+  const roleAvatarColor: Record<string, string> = {
+    Admin:      'bg-red-700 text-white',
+    Manager:    'bg-blue-700 text-white',
+    Supervisor: 'bg-purple-700 text-white',
+    Operator:   'bg-emerald-700 text-white',
   };
 
   return (
@@ -146,8 +156,8 @@ export default function Header({
               className="flex items-center gap-3 bg-[#1b365d]/80 hover:bg-[#133562] px-4 py-1.5 rounded-lg border border-[#355e9e]/50 cursor-pointer transition-colors text-left"
               id="user-profile-button"
             >
-              <div className="w-8 h-8 rounded-full bg-[#1b365d] border border-[#93b9ff]/40 flex items-center justify-center text-base">
-                {currentUser.avatar || getInitials(currentUser.name)}
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black font-mono shrink-0 ${roleAvatarColor[currentUser.role] || 'bg-slate-600 text-white'}`}>
+                {getInitials(currentUser.name)}
               </div>
               <div>
                 <div className="text-xs font-bold leading-tight font-sans text-white flex items-center gap-1">
@@ -250,7 +260,7 @@ export default function Header({
                 }`}
               >
                 <Icon className={`w-5 h-5 ${isActive ? 'text-[#93b9ff]' : 'text-[#87a0cd]'}`} />
-                <span className="truncate max-w-[110px] text-[11px] uppercase tracking-wider font-sans">{item.label}</span>
+                <span className="text-[11px] uppercase tracking-wider font-sans whitespace-nowrap">{item.label}</span>
                 {isActive && (
                   <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#93b9ff] shadow-[0_0_8px_#93b9ff]" />
                 )}

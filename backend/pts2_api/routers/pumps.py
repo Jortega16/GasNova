@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Path, HTTPException, status
+from fastapi import APIRouter, Depends, Path, HTTPException, Request, status
+from pydantic import BaseModel
 
 from pts2_sdk import PTS2Client
 
@@ -23,6 +24,13 @@ from ..schemas import (
     PumpStatusItem,
     PumpsStatusAllResponse,
     PendingTransactionCreate,
+    PendingTransactionProcess,
+)
+from ..transaction_store import (
+    complete_pending_transaction,
+    serialize_completed_transaction,
+    serialize_pending_transaction,
+    upsert_pending_transaction,
 )
 
 router = APIRouter(prefix="/pumps", tags=["pumps"])
@@ -137,18 +145,42 @@ def get_status(
 )
 def authorize(
     request: AuthorizeRequest,
+    req: Request,
     pump_id: int = Path(ge=1, description="ID del surtidor que se va a autorizar."),
     client: PTS2Client = Depends(get_pts2_client),
+    db: Session = Depends(get_db),
 ) -> CommandResponse:
-    """Envía una solicitud de autorización al surtidor seleccionado."""
+    """Envía una solicitud PumpAuthorize al PTS-2 con todos los campos del protocolo jsonPTS."""
+    # Captura el turno activo en el momento de la autorización.
+    # Se almacena en app.state para que el WebSocket y el endpoint de captura
+    # lo usen al crear el pending_transaction, evitando que un cambio de turno
+    # durante el despacho asigne la venta al turno incorrecto.
+    from ..transaction_store import get_active_shift_id
+    shift_at_auth = request.shift_id or get_active_shift_id(db)
+    if shift_at_auth:
+        auth_shifts: dict[int, str] = getattr(req.app.state, "pump_auth_shifts", {})
+        auth_shifts[pump_id] = shift_at_auth
+        req.app.state.pump_auth_shifts = auth_shifts
+
     try:
-        data: Any
-        if request.dose is None:
+        pts_data: dict[str, Any] = {"Pump": pump_id}
+        if request.nozzle is not None:
+            pts_data["Nozzle"] = request.nozzle
+        if request.type is not None:
+            pts_data["Type"] = request.type
+        if request.dose is not None:
+            pts_data["Dose"] = request.dose
+        if request.price is not None:
+            pts_data["Price"] = request.price
+        if request.tag is not None:
+            pts_data["Tag"] = request.tag
+        if request.auto_close_transaction:
+            pts_data["AutoCloseTransaction"] = True
+
+        if not request.type and not request.dose:
             data = client.pumps.authorize_free(pump_id, nozzle=request.nozzle)
-        elif request.type == "Volume":
-            data = client.pumps.authorize_volume(pump_id, nozzle=request.nozzle or 1, volume=request.dose)
         else:
-            data = client.pumps.authorize_amount(pump_id, nozzle=request.nozzle or 1, amount=request.dose)
+            data = client.request_data("PumpAuthorize", pts_data)
         return CommandResponse(data=data)
     finally:
         _close(client)
@@ -304,24 +336,28 @@ def prices(
     try:
         try:
             return CommandResponse(data=client.pumps.get_prices(pump_id))
-        except Exception as e:
-            # Fallback to local PostgreSQL system settings prices if PTS-2 is offline/unreachable
+        except Exception:
+            # Fallback local cuando el PTS-2 no está disponible.
+            # Devuelve NozzlePrices en el mismo formato que PumpPrices response del protocolo jsonPTS.
             from ..models import SystemSetting
-            settings = db.query(SystemSetting).all()
-            settings_map = {}
-            for s in settings:
+            settings_map: dict[str, float] = {}
+            for s in db.query(SystemSetting).all():
                 try:
                     settings_map[s.key] = float(s.value)
                 except (ValueError, TypeError):
                     pass
-            
-            fallback_prices = [
-                {"Nozzle": 1, "Price": settings_map.get("price_regular_unleaded", 4.19)},
-                {"Nozzle": 2, "Price": settings_map.get("price_premium_unleaded", 4.69)},
-                {"Nozzle": 3, "Price": settings_map.get("price_diesel", 4.49)},
-                {"Nozzle": 4, "Price": settings_map.get("price_kerosene", 3.89)},
+
+            nozzle_prices = [
+                settings_map.get("price_regular_unleaded", 4.19),
+                settings_map.get("price_premium_unleaded", 4.69),
+                settings_map.get("price_diesel", 4.49),
+                settings_map.get("price_kerosene", 3.89),
             ]
-            return CommandResponse(data=fallback_prices)
+            return CommandResponse(data={
+                "Pump": pump_id,
+                "NozzlePrices": nozzle_prices,
+                "_source": "local_fallback",
+            })
     finally:
         _close(client)
 
@@ -467,7 +503,14 @@ def create_transaction(
         unit_price=unit_price,
         status=f"{request.status} ({request.payment_type})",
         shift_id=active_shift_id,
-        payment_type=request.payment_type
+        payment_type=request.payment_type,
+        document_type=request.document_type,
+        document_number=request.document_number,
+        payment_reference=request.payment_reference,
+        cashier_name=request.cashier_name,
+        station_code=request.station_code,
+        pos_terminal_code=request.pos_terminal_code,
+        raw_payload=request.raw_payload,
     )
     db.add(tx)
     db.commit()
@@ -621,6 +664,45 @@ def get_pumps_configuration(db: Session = Depends(get_db)) -> CommandResponse:
     return CommandResponse(data=serialized)
 
 
+class LocalPumpConfigCreate(BaseModel):
+    pumpId: int
+    name: str
+    nozzlesCount: int = 1
+
+
+@router.post(
+    "/local-configuration",
+    response_model=CommandResponse,
+    summary="Guardar o actualizar configuración local de bomba",
+    description="Persiste nombre y cantidad de mangueras en la BD local. Complementa al endpoint /configuration/pumps que actúa sobre el PTS-2.",
+)
+def save_local_pump_configuration(
+    request: LocalPumpConfigCreate,
+    db: Session = Depends(get_db),
+) -> CommandResponse:
+    """Crea o actualiza el registro de PumpConfiguration en la BD local."""
+    existing = db.query(PumpConfiguration).filter(PumpConfiguration.pump_id == request.pumpId).first()
+    if existing:
+        existing.pump_name = request.name
+        existing.nozzles_count = request.nozzlesCount
+    else:
+        existing = PumpConfiguration(
+            pump_id=request.pumpId,
+            pump_name=request.name,
+            nozzles_count=request.nozzlesCount,
+            status="active",
+        )
+        db.add(existing)
+    db.commit()
+    db.refresh(existing)
+    return CommandResponse(data={
+        "id": existing.pump_id,
+        "name": existing.pump_name,
+        "nozzles_count": existing.nozzles_count,
+        "status": existing.status,
+    })
+
+
 @router.get(
     "/pending-transactions",
     response_model=CommandResponse,
@@ -629,18 +711,7 @@ def get_pumps_configuration(db: Session = Depends(get_db)) -> CommandResponse:
 def list_pending_transactions(db: Session = Depends(get_db)) -> CommandResponse:
     """Retorna la lista completa de despachos acumulados en pistolas (cola transitoria)."""
     pending = db.query(PendingTransaction).all()
-    serialized = [
-        {
-            "id": p.trx_id,
-            "pumpId": p.pump_id,
-            "nozzle": p.nozzle,
-            "volume": p.volume,
-            "amount": p.amount,
-            "fuelType": p.fuel_type,
-            "dateTime": p.created_at.strftime("%Y-%m-%d %I:%M %p") if p.created_at else "N/A"
-        }
-        for p in pending
-    ]
+    serialized = [serialize_pending_transaction(p) for p in pending]
     return CommandResponse(data=serialized)
 
 
@@ -655,45 +726,165 @@ def create_pending_transaction(
     db: Session = Depends(get_db),
 ) -> CommandResponse:
     """Almacena un despacho pendiente de forma transitoria en la base de datos."""
-    # Check if already exists to avoid duplicates
-    existing = db.query(PendingTransaction).filter(PendingTransaction.trx_id == request.trx_id).first()
-    if existing:
-        return CommandResponse(data={"id": existing.id, "trx_id": existing.trx_id, "message": "Ya existe"})
-
-    pending = PendingTransaction(
-        trx_id=request.trx_id,
+    pending, created = upsert_pending_transaction(
+        db,
         pump_id=pump_id,
+        trx_id=request.trx_id,
         nozzle=request.nozzle,
         volume=request.volume,
         amount=request.amount,
-        fuel_type=request.fuel_type
+        fuel_type=request.fuel_type,
+        pts_transaction_id=request.pts_transaction_id,
+        raw_payload=request.raw_payload,
+        shift_id=request.shift_id,
+        started_at=request.started_at,
+        completed_at=request.completed_at,
+        status=request.status,
+        station_code=request.station_code,
+        pos_terminal_code=request.pos_terminal_code,
     )
-    db.add(pending)
-    db.commit()
-    db.refresh(pending)
-    return CommandResponse(data={"id": pending.id, "trx_id": pending.trx_id})
+    data = serialize_pending_transaction(pending)
+    data["created"] = created
+    data["message"] = "Creada" if created else "Ya existe"
+    return CommandResponse(data=data)
+
+
+@router.post(
+    "/{pump_id}/pending-transactions/capture",
+    response_model=CommandResponse,
+    summary="Capturar transacción pendiente desde PTS-2",
+    description="Lee PumpGetTransactionInformation y guarda la venta como pendiente transaccional para que el POS la procese.",
+)
+def capture_pending_transaction_from_pts(
+    req: Request,
+    pump_id: int = Path(ge=1),
+    client: PTS2Client = Depends(get_pts2_client),
+    db: Session = Depends(get_db),
+) -> CommandResponse:
+    """Captura la última transacción del PTS-2 y la deja en pending_transactions."""
+    try:
+        transaction = client.pumps.get_transaction_information(pump_id)
+        data = transaction.model_dump(by_alias=True, exclude_none=True)
+    finally:
+        _close(client)
+
+    trx_id = str(
+        data.get("Transaction")
+        or data.get("TransactionId")
+        or data.get("LastTransaction")
+        or f"{pump_id}-{data.get('DateTime') or data.get('LastDateTime') or 'pending'}"
+    )
+    # Recupera el shift capturado en el momento de la autorización (gap #4).
+    auth_shifts: dict = getattr(req.app.state, "pump_auth_shifts", {})
+    auth_shift_id: str | None = auth_shifts.pop(pump_id, None)
+    req.app.state.pump_auth_shifts = auth_shifts
+
+    pending, created = upsert_pending_transaction(
+        db,
+        pump_id=pump_id,
+        trx_id=trx_id,
+        nozzle=data.get("Nozzle") or data.get("LastNozzle"),
+        volume=data.get("Volume") or data.get("LastVolume"),
+        amount=data.get("Amount") or data.get("LastAmount"),
+        fuel_type=data.get("FuelGradeName") or data.get("Product") or data.get("LastFuelGradeName"),
+        pts_transaction_id=trx_id,
+        raw_payload=data,
+        started_at=data.get("DateTimeStart") or data.get("DateTime"),
+        completed_at=data.get("DateTimeEnd") or data.get("LastDateTime"),
+        station_code=str(data.get("Station") or data.get("StationCode") or "") or None,
+        pos_terminal_code=str(data.get("Terminal") or data.get("PosTerminalCode") or "") or None,
+        shift_id=auth_shift_id,
+    )
+    response = serialize_pending_transaction(pending)
+    response["created"] = created
+    response["source"] = "PTS-2"
+    return CommandResponse(data=response)
+
+
+@router.post(
+    "/{pump_id}/pending-transactions/{trx_id}/process",
+    response_model=CommandResponse,
+    summary="Procesar pendiente y mover a transacción completa",
+)
+def process_pending_transaction(
+    request: PendingTransactionProcess,
+    pump_id: int = Path(ge=1),
+    trx_id: str = Path(...),
+    db: Session = Depends(get_db),
+) -> CommandResponse:
+    """Mueve una transacción pendiente a pump_transactions y elimina la pendiente."""
+    try:
+        transaction, created = complete_pending_transaction(
+            db,
+            pump_id=pump_id,
+            trx_id=trx_id,
+            payment_type=request.payment_type,
+            status=request.status,
+            document_type=request.document_type,
+            document_number=request.document_number,
+            payment_reference=request.payment_reference,
+            cashier_name=request.cashier_name,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    data = serialize_completed_transaction(transaction)
+    data["created"] = created
+    data["message"] = "Movida a transacciones completas" if created else "Ya estaba completa"
+    return CommandResponse(data=data)
 
 
 @router.delete(
     "/{pump_id}/pending-transactions/{trx_id}",
     response_model=CommandResponse,
-    summary="Eliminar transacción pendiente transitoria",
+    summary="Bajar transacción pendiente a completadas",
 )
 def delete_pending_transaction(
     pump_id: int = Path(ge=1),
     trx_id: str = Path(...),
     db: Session = Depends(get_db),
 ) -> CommandResponse:
-    """Elimina la transacción pendiente transitoria al ser procesada o cobrada."""
-    pending = db.query(PendingTransaction).filter(
-        PendingTransaction.pump_id == pump_id,
-        PendingTransaction.trx_id == trx_id
-    ).first()
-    if pending:
-        db.delete(pending)
-        db.commit()
-        return CommandResponse(data={"message": "Transacción pendiente eliminada"})
-    raise HTTPException(status_code=404, detail="No se encontró la transacción pendiente")
+    """Compatibilidad: una baja de pendiente se mueve al histórico, no se elimina."""
+    try:
+        transaction, created = complete_pending_transaction(
+            db,
+            pump_id=pump_id,
+            trx_id=trx_id,
+            payment_type="Cash",
+            status="Completed",
+            document_type="Bajada",
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    data = serialize_completed_transaction(transaction)
+    data["created"] = created
+    data["message"] = "Movida a transacciones completas como Bajada" if created else "Ya estaba completa"
+    return CommandResponse(data=data)
 
 
-
+@router.get(
+    "/{pump_id}/counters",
+    response_model=CommandResponse,
+    summary="Contadores mecánicos del surtidor",
+    description="Intenta leer TotalVolume y TotalAmount del PTS-2. Si no están disponibles devuelve 0.",
+)
+def get_pump_counters(
+    pump_id: int = Path(ge=1),
+    client: PTS2Client = Depends(get_pts2_client),
+) -> CommandResponse:
+    """Lee los contadores acumulados (odómetros mecánicos) del surtidor desde el PTS-2."""
+    try:
+        raw = client.request_data("GetPumpStatus", {"Pump": pump_id})
+        total_volume = float(raw.get("TotalVolume") or 0)
+        total_amount = float(raw.get("TotalAmount") or 0)
+    except Exception:
+        total_volume = 0.0
+        total_amount = 0.0
+    finally:
+        _close(client)
+    return CommandResponse(data={
+        "pump_id": pump_id,
+        "total_volume": total_volume,
+        "total_amount": total_amount,
+    })

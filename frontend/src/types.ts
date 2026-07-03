@@ -15,7 +15,7 @@ export interface NozzleTransaction {
   amount: number;
   fuelType: FuelType;
   status: 'Pending' | 'Processed';
-  billingType?: 'Ticket' | 'Factura';
+  billingType?: 'Bajada' | 'Ticket' | 'Factura';
   createdAt?: number;
 }
 
@@ -24,10 +24,12 @@ export interface NozzleState {
   status: PumpStatus;
   currentAmount: number;
   currentVolume: number;
-  limitAmount?: number; // for limits or prepaid
-  progressPercent: number; // 0 to 100
+  limitAmount?: number;
+  progressPercent: number;
   isPostpaid?: boolean;
   pendingTransactions?: NozzleTransaction[];
+  /** ID real de la transacción en el PTS-2, capturado en EndOfTransaction. */
+  ptsTransactionId?: string;
 }
 
 export interface DispenserState {
@@ -125,4 +127,3 @@ export interface UserProfile {
   pin: string; // 4 digit passcode
   status: 'Active' | 'Inactive';
 }
-

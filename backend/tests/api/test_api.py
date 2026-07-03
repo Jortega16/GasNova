@@ -95,8 +95,14 @@ def test_openapi_and_health_are_available():
 
     assert client.get("/openapi.json").status_code == 200
     assert client.get("/docs").status_code == 200
-    assert client.get("/redoc").status_code == 200
-    assert client.get("/redocs").status_code == 200
+    redoc = client.get("/redoc")
+    redocs = client.get("/redocs")
+    assert redoc.status_code == 200
+    assert redocs.status_code == 200
+    assert "GasNova PTS-2 API - ReDoc" in redoc.text
+    assert "GasNova PTS-2 API - ReDoc" in redocs.text
+    assert "/openapi.json" in redoc.text
+    assert "/openapi.json" in redocs.text
     response = client.get("/health")
 
     assert response.status_code == 200

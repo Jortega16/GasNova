@@ -79,7 +79,7 @@ export default function SimUniPumpPanel({
               ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
               : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
           }`}>
-            {isSimulating ? 'MOCK MODE ACTIVE' : 'ONLINE MODE'}
+            {isSimulating ? 'MODO SIMULACIÓN' : 'MODO EN LÍNEA'}
           </span>
         </div>
       </div>

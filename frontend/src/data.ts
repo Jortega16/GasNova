@@ -304,64 +304,7 @@ export const INITIAL_TRANSACTIONS: Transaction[] = [
   },
 ];
 
-export const INITIAL_SHIFTS: ShiftAlert[] = [
-  {
-    id: '1',
-    dateTime: '2024-05-27 10:30 AM',
-    pumpName: 'Pump 3',
-    volume: '10.50 Gal',
-    amount: '$38.90',
-    paymentType: 'Credit Card',
-  },
-  {
-    id: '2',
-    dateTime: '2024-05-27 10:30 AM',
-    pumpName: 'Pump 3',
-    volume: '10.50 Gal',
-    amount: '$38.90',
-    paymentType: 'Credit Card',
-  },
-  {
-    id: '3',
-    dateTime: '2024-05-27 10:30 AM',
-    pumpName: 'Pump 3',
-    volume: '10.50 Gal',
-    amount: '$38.90',
-    paymentType: 'Credit Card',
-  },
-  {
-    id: '4',
-    dateTime: '2024-05-27 10:30 AM',
-    pumpName: 'Pump 3',
-    volume: '10.50 Gal',
-    amount: '$38.90',
-    paymentType: 'Credit Card',
-  },
-  {
-    id: '5',
-    dateTime: '2024-05-27 10:30 AM',
-    pumpName: 'Pump 3',
-    volume: '10.50 Gal',
-    amount: '$38.90',
-    paymentType: 'Credit Card',
-  },
-  {
-    id: '6',
-    dateTime: '2024-05-27 10:30 AM',
-    pumpName: 'Pump 3',
-    volume: '10.50 Gal',
-    amount: '$38.90',
-    paymentType: 'Credit Card',
-  },
-  {
-    id: '7',
-    dateTime: '2024-05-27 10:30 AM',
-    pumpName: 'Pump 3',
-    volume: '10.50 Gal',
-    amount: '$38.90',
-    paymentType: 'Credit Card',
-  },
-];
+export const INITIAL_SHIFTS: ShiftAlert[] = [];
 
 export const INITIAL_USERS: UserProfile[] = [
   {

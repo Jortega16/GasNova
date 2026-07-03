@@ -12,6 +12,7 @@ interface InventoryTabProps {
   onRefillTank: (tankId: string, gallons: number) => void;
   onAddTank?: (name: string, fuelType: FuelType, maxCapacity: number) => void;
   setTanks?: React.Dispatch<React.SetStateAction<TankState[]>>;
+  isSimulating?: boolean;
 }
 
 const fuelTypeTranslations: { [key: string]: string } = {
@@ -21,7 +22,7 @@ const fuelTypeTranslations: { [key: string]: string } = {
   'LPG': 'LPG'
 };
 
-export default function InventoryTab({ tanks, onRefillTank, onAddTank, setTanks }: InventoryTabProps) {
+export default function InventoryTab({ tanks, onRefillTank, onAddTank, setTanks, isSimulating = false }: InventoryTabProps) {
   
   const [selectedTankId, setSelectedTankId] = useState<string>('T-01');
   const [refillAmount, setRefillAmount] = useState<string>('3000');
@@ -114,7 +115,7 @@ export default function InventoryTab({ tanks, onRefillTank, onAddTank, setTanks 
               Estado del Inventario de Tanques de Combustible
             </h2>
             
-            {setTanks && (
+            {setTanks && isSimulating && (
               <button
                 type="button"
                 onClick={() => {
@@ -264,7 +265,7 @@ export default function InventoryTab({ tanks, onRefillTank, onAddTank, setTanks 
           <div className="border-b border-slate-800 pb-3">
             <h3 className="font-sans font-bold text-sm uppercase tracking-wider text-white flex items-center gap-2">
               <ArrowDownCircle className="w-4 h-4 text-[#4CAF50]" />
-              Registrar Abastecimiento de Cisterna
+              Registrar Entrega de Cisterna
             </h3>
             <p className="text-[11px] text-[#87a0cd] font-sans mt-1 leading-relaxed">
               Planifica o registra una recarga de pipa de combustible para reponer los niveles de un tanque.

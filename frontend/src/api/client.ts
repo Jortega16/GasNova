@@ -109,12 +109,14 @@ export const api = {
     nozzle: number,
     type?: "Volume" | "Amount",
     dose?: number,
+    shiftId?: string,
   ): Promise<BackendApiResponse> {
     const body: Record<string, unknown> = { nozzle };
     if (type && dose !== undefined) {
       body.type = type;
       body.dose = dose;
     }
+    if (shiftId) body.shift_id = shiftId;
     return apiFetch(`pumps/${pumpId}/authorize`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -274,6 +276,7 @@ export const api = {
     shiftId: string,
     operatorName: string,
     endTime: string,
+    counterBreakdown?: unknown[],
   ): Promise<BackendApiResponse> {
     return apiFetch("shifts/close", {
       method: "POST",
@@ -282,6 +285,7 @@ export const api = {
         operator_name: operatorName,
         end_time: endTime,
         status: "Closed",
+        counter_breakdown: counterBreakdown ?? [],
       }),
     });
   },
@@ -386,6 +390,19 @@ export const api = {
     });
   },
 
+  async capturePendingTransaction(pumpId: number): Promise<BackendApiResponse<{
+    trx_id: string;
+    pts_transaction_id: string | null;
+    pump_id: number;
+    nozzle: number | null;
+    volume: number;
+    amount: number;
+    fuel_type: string | null;
+    created: boolean;
+  }>> {
+    return apiFetch(`pumps/${pumpId}/pending-transactions/capture`, { method: "POST" });
+  },
+
   async deletePendingTransaction(
     pumpId: number,
     trxId: string,
@@ -414,5 +431,94 @@ export const api = {
         }),
       },
     );
+  },
+
+  // ── Configuration endpoints ──────────────────────────────────────────────
+
+  async getFuelGradesConfiguration(): Promise<BackendApiResponse> {
+    return apiFetch("configuration/fuel-grades");
+  },
+
+  async getPumpsConfigurationPts(): Promise<BackendApiResponse> {
+    return apiFetch("configuration/pumps");
+  },
+
+  async getNozzlesConfiguration(): Promise<BackendApiResponse> {
+    return apiFetch("configuration/nozzles");
+  },
+
+  async setupPumpConfiguration(params: {
+    pump: { id: number; port: number; address: number; protocol: number; baudRate: number };
+    nozzles: { fuelGradeId: number; fuelGradeName: string; price: number }[];
+    fuelGrades: { id: number; name: string; price: number }[];
+  }): Promise<BackendApiResponse> {
+    // Step 1 — fuel grades
+    const fgRes = await apiFetch("configuration/fuel-grades", {
+      method: "POST",
+      body: JSON.stringify({
+        fuel_grades: params.fuelGrades.map((fg) => ({
+          id: fg.id,
+          name: fg.name,
+          price: fg.price,
+          expansion_coefficient: 0.00110,
+        })),
+      }),
+    });
+    if (!fgRes.ok) return fgRes;
+
+    // Step 2 — pump RS-485
+    const pumpRes = await apiFetch("configuration/pumps", {
+      method: "POST",
+      body: JSON.stringify({
+        ports: [
+          {
+            id: params.pump.port,
+            protocol: params.pump.protocol,
+            baud_rate: params.pump.baudRate,
+          },
+        ],
+        pumps: [
+          {
+            id: params.pump.id,
+            port: params.pump.port,
+            address: params.pump.address,
+          },
+        ],
+      }),
+    });
+    if (!pumpRes.ok) return pumpRes;
+
+    // Step 3 — nozzle mapping
+    const nozzleRes = await apiFetch("configuration/nozzles", {
+      method: "POST",
+      body: JSON.stringify({
+        pump_nozzles: [
+          {
+            pump_id: params.pump.id,
+            fuel_grade_ids: params.nozzles.map((n) => n.fuelGradeId),
+          },
+        ],
+      }),
+    });
+    return nozzleRes;
+  },
+
+  async getPumpCounters(pumpId: number): Promise<BackendApiResponse<{
+    pump_id: number;
+    total_volume: number;
+    total_amount: number;
+  }>> {
+    return apiFetch(`pumps/${pumpId}/counters`);
+  },
+
+  async saveLocalPumpConfig(params: {
+    pumpId: number;
+    name: string;
+    nozzlesCount: number;
+  }): Promise<BackendApiResponse> {
+    return apiFetch("pumps/local-configuration", {
+      method: "POST",
+      body: JSON.stringify(params),
+    });
   },
 };

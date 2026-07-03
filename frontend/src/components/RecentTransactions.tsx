@@ -48,6 +48,14 @@ export default function RecentTransactions({
     return 'text-purple-400';
   };
 
+  const getFuelLabel = (fuelType: string) => {
+    if (fuelType.includes('Regular')) return 'Regular';
+    if (fuelType.includes('Premium')) return 'Súper';
+    if (fuelType.includes('Diesel')) return 'Diesel';
+    if (fuelType.includes('Kerosene')) return 'Kero';
+    return fuelType || 'N/D';
+  };
+
   const filtered = transactions.filter((t) => {
     // Combine general search query from header and localSearch from sidebar
     const qHeader = searchQuery.toLowerCase();
@@ -182,7 +190,9 @@ export default function RecentTransactions({
                 {/* Pump */}
                 <div className="col-span-2 flex justify-center">
                   <span className={`font-bold text-[9px] px-1.5 py-0.5 rounded-md bg-slate-700/60 border border-slate-600/30 font-mono ${fuelColor}`}>
-                    {trx.pumpName.replace('Cara ', 'C')}
+                    {trx.pumpName.replace('Cara ', 'C').includes('(')
+                      ? trx.pumpName.replace('Cara ', 'C')
+                      : `${trx.pumpName.replace('Cara ', 'C')} (${getFuelLabel(trx.fuelType)})`}
                   </span>
                 </div>
 

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from typing import Dict
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..dependencies import refresh_pts2_client
 from ..models import SystemSetting
 from ..schemas import CommandResponse
 
@@ -50,15 +51,19 @@ def get_settings(db: Session = Depends(get_db)) -> CommandResponse:
 
 
 @router.put("/{key}", response_model=CommandResponse, summary="Update system setting")
-def update_setting(key: str, update: SettingUpdate, db: Session = Depends(get_db)) -> CommandResponse:
+def update_setting(key: str, update: SettingUpdate, request: Request, db: Session = Depends(get_db)) -> CommandResponse:
     """Create or update a specific configuration parameter by key."""
     setting = db.query(SystemSetting).filter(SystemSetting.key == key).first()
     if not setting:
-        # Create it if it doesn't exist
         setting = SystemSetting(key=key, value=update.value)
         db.add(setting)
     else:
         setting.value = update.value
     db.commit()
     db.refresh(setting)
+
+    # Reconnect PTS-2 client immediately when the host changes
+    if key == "pts2_host":
+        refresh_pts2_client(request)
+
     return CommandResponse(data={setting.key: setting.value})

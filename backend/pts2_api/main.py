@@ -15,7 +15,7 @@ from pts2_sdk.exceptions import PTS2Error
 
 from .routers import (
     health, pumps, reports, tanks, websocket,
-    users, shifts, scheduled_prices, print_receipt, settings,
+    users, shifts, scheduled_prices, print_receipt, settings, configuration, sync,
 )
 from .database import init_db, SessionLocal
 from .worker import scheduled_price_worker
@@ -51,6 +51,8 @@ async def lifespan(app: FastAPI):
     # share the same connection instead of creating one per request.
     from .dependencies import build_pts2_client
     app.state.pts2_client = build_pts2_client()
+    # Mapa pump_id → shift_id capturado en authorize; consumido al crear pending.
+    app.state.pump_auth_shifts: dict[int, str] = {}
 
     worker_task = asyncio.create_task(scheduled_price_worker())
 
@@ -87,6 +89,8 @@ def create_app() -> FastAPI:
             {"name": "shifts", "description": "Shift control and closures."},
             {"name": "scheduled-prices", "description": "Fuel price change schedules."},
             {"name": "print", "description": "Thermal receipt printing via ESC/POS (AON PR-255 / POS-80)."},
+            {"name": "configuration", "description": "Mapeo de caras, mangueras y combustibles en el PTS-2 (3 pasos)."},
+            {"name": "sync", "description": "Recuperación de transacciones faltantes desde la SD del PTS-2."},
         ],
     )
 
@@ -107,6 +111,8 @@ def create_app() -> FastAPI:
     app.include_router(scheduled_prices.router)
     app.include_router(print_receipt.router)
     app.include_router(settings.router)
+    app.include_router(configuration.router)
+    app.include_router(sync.router)
 
     @app.exception_handler(PTS2Error)
     async def pts2_exception_handler(

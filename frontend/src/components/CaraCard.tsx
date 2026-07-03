@@ -6,9 +6,9 @@
 import React, { useState } from 'react';
 import {
   Fuel, Lock, Unlock, PlayCircle, Ban, RefreshCw, Settings,
-  Trash2, CheckCircle, DollarSign, Zap, AlertCircle, StopCircle
+  Trash2, CheckCircle, DollarSign, StopCircle, Zap, AlertTriangle
 } from 'lucide-react';
-import { DispenserState, FuelType, PumpStatus, NozzleState, PaymentMethod, NozzleTransaction } from '../types';
+import { DispenserState, FuelType, NozzleState, PaymentMethod } from '../types';
 
 interface CaraCardProps {
   key?: any;
@@ -28,47 +28,89 @@ interface CaraCardProps {
   onStopPump?: (dispenserId: number, fuelType: FuelType) => void;
   unitMeasure?: 'Galones' | 'Litros';
   currencySymbol?: string;
+  canBlock?: boolean;
+  canPreauth?: boolean;
+  canEmergencyStop?: boolean;
 }
 
-const NOZZLE_CFG: Record<FuelType, { dot: string; label: string; short: string; octane: string; glow: string; accent: string; active: string; ring: string }> = {
+const NOZZLE_CFG: Record<FuelType, {
+  dot: string; bg: string; border: string; text: string;
+  label: string; short: string; glow: string;
+}> = {
   'Regular Unleaded': {
-    dot: 'bg-blue-500', label: 'Regular', short: 'REG', octane: '87',
-    glow: 'shadow-blue-500/30', accent: 'text-blue-400', active: 'bg-blue-500/10 border-blue-500/30',
-    ring: 'ring-blue-400/20',
+    dot: 'bg-blue-500', bg: 'bg-blue-500/10', border: 'border-blue-500/25',
+    text: 'text-blue-400', label: 'Regular', short: 'REG', glow: '0 0 8px #3b82f680',
   },
   'Premium Unleaded': {
-    dot: 'bg-amber-400', label: 'Súper', short: 'SUP', octane: '93',
-    glow: 'shadow-amber-500/30', accent: 'text-amber-400', active: 'bg-amber-500/10 border-amber-500/30',
-    ring: 'ring-amber-400/20',
+    dot: 'bg-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/25',
+    text: 'text-amber-400', label: 'Súper', short: 'SUP', glow: '0 0 8px #f59e0b80',
   },
   'Diesel': {
-    dot: 'bg-emerald-500', label: 'Diesel', short: 'DSL', octane: 'D',
-    glow: 'shadow-emerald-500/30', accent: 'text-emerald-400', active: 'bg-emerald-500/10 border-emerald-500/30',
-    ring: 'ring-emerald-400/20',
+    dot: 'bg-emerald-500', bg: 'bg-emerald-500/10', border: 'border-emerald-500/25',
+    text: 'text-emerald-400', label: 'Diesel', short: 'DSL', glow: '0 0 8px #10b98180',
   },
   'Kerosene': {
-    dot: 'bg-purple-500', label: 'Kero', short: 'KER', octane: 'K',
-    glow: 'shadow-purple-500/30', accent: 'text-purple-400', active: 'bg-purple-500/10 border-purple-500/30',
-    ring: 'ring-purple-400/20',
+    dot: 'bg-purple-500', bg: 'bg-purple-500/10', border: 'border-purple-500/25',
+    text: 'text-purple-400', label: 'Kero', short: 'KER', glow: '0 0 8px #a855f780',
   },
   'LPG': {
-    dot: 'bg-indigo-500', label: 'LPG', short: 'LPG', octane: 'G',
-    glow: 'shadow-indigo-500/30', accent: 'text-indigo-400', active: 'bg-indigo-500/10 border-indigo-500/30',
-    ring: 'ring-indigo-400/20',
+    dot: 'bg-indigo-500', bg: 'bg-indigo-500/10', border: 'border-indigo-500/25',
+    text: 'text-indigo-400', label: 'LPG', short: 'LPG', glow: '0 0 8px #6366f180',
   },
 };
 
-const STATUS_DOT: Record<string, string> = {
-  'Dispensing':       'bg-green-400 animate-pulse shadow-sm shadow-green-400/50',
-  'Prepaid':          'bg-amber-400 animate-pulse shadow-sm shadow-amber-400/50',
-  'Authorized':       'bg-amber-400 animate-pulse shadow-sm shadow-amber-400/50',
-  'Unpaid':           'bg-rose-400 animate-bounce shadow-sm shadow-rose-400/50',
-  'EndOfTransaction': 'bg-rose-400 animate-bounce shadow-sm shadow-rose-400/50',
-  'Blocked':          'bg-red-500 shadow-sm shadow-red-500/50',
-  'Ready':            'bg-emerald-400 shadow-sm shadow-emerald-400/50',
-  'Idle':             'bg-slate-500',
-  'Fueling':          'bg-sky-400 animate-pulse shadow-sm shadow-sky-400/50',
-  'Offline':          'bg-slate-700',
+// Card-level state config
+const CARD_STATE = {
+  dispensing: {
+    border: 'border-green-500/40',
+    glow: 'shadow-[0_0_20px_rgba(74,222,128,0.08)]',
+    accent: 'from-green-500/60 to-transparent',
+    badge: 'bg-green-500/15 text-green-300 border-green-500/20',
+    badgeText: 'DESPACHANDO',
+    ledBg: 'bg-[#021a0a]',
+    ledValue: '#4ade80',
+    ledDim: '#166534',
+  },
+  unpaid: {
+    border: 'border-rose-500/50',
+    glow: 'shadow-[0_0_20px_rgba(244,63,94,0.10)]',
+    accent: 'from-rose-500/60 to-transparent',
+    badge: 'bg-rose-500/15 text-rose-300 border-rose-500/20',
+    badgeText: 'COBRO PEND.',
+    ledBg: 'bg-[#1a0208]',
+    ledValue: '#fb7185',
+    ledDim: '#9f1239',
+  },
+  prepaid: {
+    border: 'border-amber-500/40',
+    glow: 'shadow-[0_0_16px_rgba(251,191,36,0.08)]',
+    accent: 'from-amber-500/60 to-transparent',
+    badge: 'bg-amber-500/15 text-amber-300 border-amber-500/20',
+    badgeText: 'AUTORIZADA',
+    ledBg: 'bg-[#1a1002]',
+    ledValue: '#fbbf24',
+    ledDim: '#92400e',
+  },
+  blocked: {
+    border: 'border-red-700/40',
+    glow: '',
+    accent: 'from-red-700/40 to-transparent',
+    badge: 'bg-red-900/30 text-red-400 border-red-700/30',
+    badgeText: 'BLOQUEADA',
+    ledBg: 'bg-[#0f0404]',
+    ledValue: '#ef4444',
+    ledDim: '#7f1d1d',
+  },
+  idle: {
+    border: 'border-slate-700/40 hover:border-slate-600/60',
+    glow: '',
+    accent: 'from-slate-600/30 to-transparent',
+    badge: 'bg-slate-800/60 text-slate-500 border-slate-700/30',
+    badgeText: 'EN ESPERA',
+    ledBg: 'bg-[#070b0f]',
+    ledValue: '#166534',
+    ledDim: '#0d2015',
+  },
 };
 
 export default function CaraCard({
@@ -88,19 +130,22 @@ export default function CaraCard({
   onStopPump,
   unitMeasure = 'Litros',
   currencySymbol = '$',
+  canBlock = true,
+  canPreauth = true,
+  canEmergencyStop = true,
 }: CaraCardProps) {
-
   const [isEditing, setIsEditing] = useState(false);
   const [editNozzles, setEditNozzles] = useState<NozzleState[]>([]);
 
-  const isDispensing  = dispenser.nozzles.some(n => n.status === 'Dispensing');
-  const isAnyUnpaid   = dispenser.nozzles.some(n => n.status === 'Unpaid' || n.status === 'EndOfTransaction');
-  const isAnyPrepaid  = dispenser.nozzles.some(n => n.status === 'Prepaid' || n.status === 'Authorized');
-  const isAnyBlocked  = dispenser.nozzles.some(n => n.status === 'Blocked');
-  const isAnyOffline  = dispenser.nozzles.some(n => n.status === 'Offline');
-  const activeNozzle  = dispenser.nozzles.find(n => ['Dispensing','Prepaid','Authorized','Unpaid','EndOfTransaction'].includes(n.status));
-  const totalPending  = dispenser.nozzles.reduce((s, n) => s + (n.pendingTransactions?.length || 0), 0);
-  const firstPending  = dispenser.nozzles.find(n => (n.pendingTransactions?.length || 0) > 0);
+  const isDispensing = dispenser.nozzles.some(n => n.status === 'Dispensing');
+  const isAnyUnpaid  = dispenser.nozzles.some(n => n.status === 'Unpaid' || n.status === 'EndOfTransaction');
+  const isAnyPrepaid = dispenser.nozzles.some(n => n.status === 'Prepaid' || n.status === 'Authorized');
+  const isAnyOffline = dispenser.nozzles.some(n => n.status === 'Offline');
+  const activeNozzle = dispenser.nozzles.find(n =>
+    ['Dispensing', 'Prepaid', 'Authorized', 'Unpaid', 'EndOfTransaction'].includes(n.status)
+  );
+  const totalPending = dispenser.nozzles.reduce((s, n) => s + (n.pendingTransactions?.length || 0), 0);
+  const firstPending = dispenser.nozzles.find(n => (n.pendingTransactions?.length || 0) > 0);
 
   const displayNozzle = activeNozzle || dispenser.nozzles[0];
   const displayAmount = displayNozzle?.currentAmount || 0;
@@ -109,29 +154,26 @@ export default function CaraCard({
   const basePrice = activePrices[displayNozzle?.fuelType || 'Regular Unleaded'] || 4.19;
   const displayPrice = unitMeasure === 'Galones' ? basePrice * 3.78541 : basePrice;
 
-  const cardBorder = dispenser.isBlocked   ? 'border-red-700/40' :
-                     isDispensing          ? 'border-green-500/35 shadow-green-500/8' :
-                     isAnyUnpaid           ? 'border-rose-500/40 shadow-rose-500/10' :
-                     isAnyPrepaid          ? 'border-amber-500/35' :
-                     isAnyOffline          ? 'border-slate-700/20 opacity-60' :
-                     totalPending > 0      ? 'border-rose-600/30' :
-                                            'border-slate-700/40 hover:border-slate-600/50';
+  const state = dispenser.isBlocked ? CARD_STATE.blocked :
+                isDispensing        ? CARD_STATE.dispensing :
+                isAnyUnpaid         ? CARD_STATE.unpaid :
+                isAnyPrepaid        ? CARD_STATE.prepaid :
+                                      CARD_STATE.idle;
 
-  // ── EDITOR ────────────────────────────────────────────────────────────────
+  // ── EDITOR ─────────────────────────────────────────────────────────────────
   if (isEditing) {
     return (
-      <div className="rounded-xl border border-slate-600/40 bg-[#111827] overflow-hidden text-white text-xs">
-        {/* Header */}
-        <div className="flex items-center justify-between px-2.5 py-2 bg-[#0f1923] border-b border-slate-800/60">
-          <span className="font-mono font-black text-[11px] text-white">{dispenser.name}</span>
-          <Settings className="w-3 h-3 text-slate-400" />
+      <div className="rounded-2xl border border-slate-700/50 bg-[#0f1623] overflow-hidden text-white text-xs shadow-xl">
+        <div className="flex items-center justify-between px-3 py-2.5 bg-[#0b1120] border-b border-slate-800">
+          <span className="font-mono font-black text-[11px] text-slate-300 tracking-widest uppercase">{dispenser.name} — Configurar</span>
+          <Settings className="w-3.5 h-3.5 text-slate-500" />
         </div>
-        <div className="p-2.5 space-y-1.5">
+        <div className="p-3 space-y-2">
           {editNozzles.map((nozzle, i) => {
             const cfg = NOZZLE_CFG[nozzle.fuelType];
             return (
-              <div key={i} className="flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full ${cfg.dot} shrink-0`} />
+              <div key={i} className="flex items-center gap-2">
+                <span className={`w-2.5 h-2.5 rounded-full ${cfg.dot} shrink-0`} />
                 <select
                   value={nozzle.fuelType}
                   onChange={e => {
@@ -139,17 +181,20 @@ export default function CaraCard({
                     copy[i] = { ...copy[i], fuelType: e.target.value as FuelType };
                     setEditNozzles(copy);
                   }}
-                  className="flex-1 bg-slate-800 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-white focus:outline-none cursor-pointer"
+                  className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-white focus:outline-none focus:border-blue-500 cursor-pointer"
                 >
-                  <option value="Regular Unleaded">Regular (87)</option>
+                  <option value="Regular Unleaded">Regular Unleaded (87)</option>
                   <option value="Premium Unleaded">Súper Premium (93)</option>
                   <option value="Diesel">Diesel (D)</option>
                   <option value="Kerosene">Queroseno (K)</option>
+                  <option value="LPG">LPG (G)</option>
                 </select>
                 {editNozzles.length > 1 && (
-                  <button onClick={() => setEditNozzles(editNozzles.filter((_, idx) => idx !== i))}
-                    className="p-1 rounded bg-red-900/30 text-red-400 hover:bg-red-900/60 border border-red-700/30 cursor-pointer">
-                    <Trash2 className="w-2.5 h-2.5" />
+                  <button
+                    onClick={() => setEditNozzles(editNozzles.filter((_, idx) => idx !== i))}
+                    className="p-1.5 rounded-lg bg-red-900/40 text-red-400 hover:bg-red-900/70 border border-red-800/40 cursor-pointer transition-colors"
+                  >
+                    <Trash2 className="w-3 h-3" />
                   </button>
                 )}
               </div>
@@ -158,296 +203,326 @@ export default function CaraCard({
           {editNozzles.length < 4 && (
             <button
               onClick={() => {
-                const available: FuelType[] = ['Regular Unleaded','Premium Unleaded','Diesel','Kerosene'];
-                const first = available.find(f => !editNozzles.map(n => n.fuelType).includes(f)) || 'Kerosene';
+                const available: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene', 'LPG'];
+                const first = available.find(f => !editNozzles.map(n => n.fuelType).includes(f)) || 'LPG';
                 setEditNozzles([...editNozzles, { fuelType: first, status: 'Idle', currentAmount: 0, currentVolume: 0, progressPercent: 0 }]);
               }}
-              className="w-full py-1.5 border border-dashed border-sky-500/30 rounded text-[10px] text-sky-400 hover:bg-sky-500/10 cursor-pointer"
-            >+ Añadir</button>
+              className="w-full py-2 border border-dashed border-blue-500/30 rounded-lg text-[11px] text-blue-400 hover:bg-blue-500/10 cursor-pointer transition-colors"
+            >
+              + Añadir manguera
+            </button>
           )}
-          <div className="flex gap-1.5 pt-1">
-            <button onClick={() => setIsEditing(false)} className="flex-1 py-1.5 text-[10px] font-bold bg-slate-700 hover:bg-slate-600 rounded cursor-pointer">Cancelar</button>
-            <button onClick={() => { onUpdateNozzles(dispenser.id, editNozzles); setIsEditing(false); }} className="flex-1 py-1.5 text-[10px] font-bold bg-emerald-700 hover:bg-emerald-600 text-white rounded cursor-pointer">Guardar</button>
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={() => setIsEditing(false)}
+              className="flex-1 py-2 text-[11px] font-bold bg-slate-800 hover:bg-slate-700 rounded-lg cursor-pointer transition-colors"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={() => { onUpdateNozzles(dispenser.id, editNozzles); setIsEditing(false); }}
+              className="flex-1 py-2 text-[11px] font-bold bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg cursor-pointer transition-colors"
+            >
+              Guardar
+            </button>
           </div>
         </div>
       </div>
     );
   }
 
-  // ── MAIN CARD ─────────────────────────────────────────────────────────────
+  // ── MAIN CARD ───────────────────────────────────────────────────────────────
   return (
     <div
-      className={`relative rounded-xl border overflow-hidden transition-all duration-200 flex flex-col bg-[#111827] shadow-lg ${cardBorder} ${isDispensing ? 'shadow-md' : ''}`}
+      className={`relative rounded-2xl border overflow-hidden flex flex-col bg-[#0d1117] transition-all duration-300 ${state.border} ${state.glow}`}
       id={`dispenser-cara-${dispenser.id}`}
     >
-      {/* Top accent line */}
-      <div className={`h-px w-full ${
-        isDispensing   ? 'bg-gradient-to-r from-transparent via-green-400/70 to-transparent' :
-        isAnyUnpaid    ? 'bg-gradient-to-r from-transparent via-rose-400/70 to-transparent' :
-        isAnyPrepaid   ? 'bg-gradient-to-r from-transparent via-amber-400/60 to-transparent' :
-        totalPending>0 ? 'bg-gradient-to-r from-transparent via-rose-500/40 to-transparent' :
-                         'bg-gradient-to-r from-transparent via-slate-700/50 to-transparent'
-      }`} />
+      {/* Top color accent bar */}
+      <div className={`h-0.5 w-full bg-gradient-to-r ${state.accent}`} />
 
-      {/* ── HEADER: name + status LED + toolbar ── */}
-      <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#0f1923]/80 border-b border-slate-800/50">
-        <div className="flex items-center gap-1.5">
-          {/* Status LED */}
-          <div className={`w-2 h-2 rounded-full shadow-sm ${
-            dispenser.isBlocked ? 'bg-red-500 shadow-red-500/70 animate-pulse' :
-            isDispensing        ? 'bg-green-400 shadow-green-400/80 animate-pulse' :
-            isAnyUnpaid         ? 'bg-rose-400 shadow-rose-400/80 animate-bounce' :
-            isAnyPrepaid        ? 'bg-amber-400 shadow-amber-400/80 animate-pulse' :
-            totalPending>0      ? 'bg-rose-500 shadow-rose-500/60 animate-pulse' :
-                                  'bg-slate-600'
-          }`} />
-          <span className="font-mono font-black text-[11px] text-white tracking-wider uppercase">
+      {/* ── HEADER ── */}
+      <div className="flex items-center justify-between px-3 pt-2.5 pb-2">
+        <div className="flex items-center gap-2">
+          {/* Pulse indicator */}
+          <div className="relative flex items-center justify-center">
+            {(isDispensing || isAnyUnpaid || isAnyPrepaid) && (
+              <span className={`absolute inline-flex w-4 h-4 rounded-full opacity-40 animate-ping ${
+                isDispensing ? 'bg-green-400' : isAnyUnpaid ? 'bg-rose-400' : 'bg-amber-400'
+              }`} />
+            )}
+            <span className={`relative w-2.5 h-2.5 rounded-full ${
+              dispenser.isBlocked ? 'bg-red-500' :
+              isDispensing        ? 'bg-green-400' :
+              isAnyUnpaid         ? 'bg-rose-400' :
+              isAnyPrepaid        ? 'bg-amber-400' :
+              isAnyOffline        ? 'bg-slate-700' :
+                                    'bg-slate-600'
+            }`} />
+          </div>
+
+          <span className="font-mono font-black text-[13px] text-white tracking-widest uppercase">
             {dispenser.name}
           </span>
+
           {totalPending > 0 && (
-            <span className="bg-rose-500 text-white text-[8px] font-black px-1 py-0.5 rounded-full leading-none">
+            <span className="bg-rose-500 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full leading-none shadow-sm">
               {totalPending}
             </span>
           )}
         </div>
 
-        {/* Icon toolbar */}
+        {/* Toolbar */}
         <div className="flex items-center gap-0.5">
           <button
             onClick={() => { setEditNozzles([...dispenser.nozzles]); setIsEditing(true); }}
-            className="p-1 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300 cursor-pointer transition-all"
+            className="p-1.5 rounded-lg text-slate-600 hover:text-slate-300 hover:bg-slate-800/60 cursor-pointer transition-all"
             title="Configurar mangueras"
           >
-            <Settings className="w-2.5 h-2.5" />
+            <Settings className="w-3.5 h-3.5" />
           </button>
-          <button
-            onClick={() => onToggleBlockDispenser(dispenser.id)}
-            className={`p-1 rounded cursor-pointer transition-all ${
-              dispenser.isBlocked ? 'text-red-400 hover:bg-red-900/30' : 'text-slate-600 hover:text-slate-300 hover:bg-slate-800'
-            }`}
-            title={dispenser.isBlocked ? 'Habilitar' : 'Bloquear cara'}
-          >
-            {dispenser.isBlocked ? <Lock className="w-2.5 h-2.5" /> : <Unlock className="w-2.5 h-2.5" />}
-          </button>
-          {onStopPump && (
+          {canBlock && (
             <button
-              onClick={() => onStopPump(dispenser.id, displayNozzle.fuelType)}
-              className="p-1 rounded text-amber-500 hover:bg-amber-900/30 hover:text-amber-400 cursor-pointer transition-all"
-              title="Detener carga/surtidor (PumpStop)"
+              onClick={() => onToggleBlockDispenser(dispenser.id)}
+              className={`p-1.5 rounded-lg cursor-pointer transition-all ${
+                dispenser.isBlocked
+                  ? 'text-red-400 hover:bg-red-900/30 bg-red-950/20'
+                  : 'text-slate-600 hover:text-slate-300 hover:bg-slate-800/60'
+              }`}
+              title={dispenser.isBlocked ? 'Habilitar cara' : 'Bloquear cara'}
             >
-              <StopCircle className="w-2.5 h-2.5" />
+              {dispenser.isBlocked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
             </button>
           )}
-          <button
-            onClick={() => dispenser.nozzles.forEach(n => onEmergencyStop(dispenser.id, n.fuelType))}
-            className="p-1 rounded text-red-600 hover:bg-red-900/30 hover:text-red-400 cursor-pointer transition-all"
-            title="Parada de emergencia"
-          >
-            <Ban className="w-2.5 h-2.5" />
-          </button>
+          {canEmergencyStop && (
+            <button
+              onClick={() => dispenser.nozzles.forEach(n => onEmergencyStop(dispenser.id, n.fuelType))}
+              className="p-1.5 rounded-lg text-slate-700 hover:text-red-400 hover:bg-red-950/30 cursor-pointer transition-all"
+              title="Parada de emergencia"
+            >
+              <Ban className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
-      {/* ── LED DISPLAY (compact) ── */}
-      <div className="mx-2 mt-2 rounded-lg overflow-hidden border border-slate-700/40 bg-[#070b0f]">
-        {/* Display values */}
-        <div className="px-2.5 py-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[8px] font-mono text-green-800 uppercase tracking-widest">{unitMeasure === 'Litros' ? `${currencySymbol}/L` : `${currencySymbol}/GAL`}</span>
-            <span className="text-[9px] font-mono font-bold text-green-600/70"
-              style={{ fontFamily: "'Courier New', monospace" }}>
+      {/* ── LED DISPLAY ── */}
+      <div className={`mx-3 rounded-xl overflow-hidden border border-slate-800/80 ${state.ledBg}`}>
+        {/* Main metrics row */}
+        <div className="grid grid-cols-3 divide-x divide-slate-800/60 px-0">
+          {/* Price */}
+          <div className="px-3 py-2 flex flex-col items-center">
+            <span className="text-[8px] font-mono uppercase tracking-widest mb-0.5"
+              style={{ color: state.ledDim }}>
+              {unitMeasure === 'Litros' ? `${currencySymbol}/L` : `${currencySymbol}/GAL`}
+            </span>
+            <span className="font-mono text-[13px] font-bold tabular-nums"
+              style={{ color: state.ledValue, fontFamily: "'Courier New', monospace" }}>
               {displayPrice.toFixed(3)}
             </span>
           </div>
-          <div className="flex items-baseline justify-between mt-0.5">
-            <span className="text-[8px] font-mono text-green-800 uppercase tracking-widest">MONTO</span>
-            <span className="text-sm font-black text-green-400 font-mono"
-              style={{ fontFamily: "'Courier New', monospace", textShadow: displayAmount > 0 ? '0 0 10px #4ade80' : 'none' }}>
+          {/* Amount — center, larger */}
+          <div className="px-3 py-2 flex flex-col items-center">
+            <span className="text-[8px] font-mono uppercase tracking-widest mb-0.5"
+              style={{ color: state.ledDim }}>
+              MONTO
+            </span>
+            <span className="font-mono text-[18px] font-black tabular-nums leading-none"
+              style={{
+                color: state.ledValue,
+                fontFamily: "'Courier New', monospace",
+                textShadow: displayAmount > 0 ? `0 0 12px ${state.ledValue}60` : 'none',
+              }}>
               {currencySymbol}{displayAmount.toFixed(2)}
             </span>
           </div>
-          <div className="flex items-baseline justify-between">
-            <span className="text-[8px] font-mono text-green-800 uppercase tracking-widest">{unitMeasure === 'Litros' ? 'LTS' : 'GAL'}</span>
-            <span className="text-xs font-bold text-green-300/60 font-mono"
-              style={{ fontFamily: "'Courier New', monospace", textShadow: displayVolume > 0 ? '0 0 6px #4ade80' : 'none' }}>
+          {/* Volume */}
+          <div className="px-3 py-2 flex flex-col items-center">
+            <span className="text-[8px] font-mono uppercase tracking-widest mb-0.5"
+              style={{ color: state.ledDim }}>
+              {unitMeasure === 'Litros' ? 'LTS' : 'GAL'}
+            </span>
+            <span className="font-mono text-[13px] font-bold tabular-nums"
+              style={{ color: state.ledValue, fontFamily: "'Courier New', monospace" }}>
               {displayVolume.toFixed(3)}
             </span>
           </div>
-
-          {/* Progress bar */}
-          {isDispensing && displayNozzle && (
-            <div className="mt-1 bg-green-950 h-0.5 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-green-600 to-green-300 rounded-full transition-all duration-500"
-                style={{ width: `${displayNozzle.progressPercent || 0}%`, boxShadow: '0 0 4px #4ade80' }}
-              />
-            </div>
-          )}
         </div>
 
-        {/* Status strip */}
-        <div className={`px-2 py-0.5 text-center text-[8px] font-mono font-bold uppercase tracking-widest ${
-          dispenser.isBlocked ? 'bg-red-950/60 text-red-500' :
-          isDispensing        ? 'bg-green-950/60 text-green-400 animate-pulse' :
-          isAnyUnpaid         ? 'bg-rose-950/60 text-rose-400 animate-pulse' :
-          isAnyPrepaid        ? 'bg-amber-950/60 text-amber-400' :
-          totalPending>0      ? 'bg-rose-950/40 text-rose-500 animate-pulse' :
-                                'bg-slate-900/40 text-slate-700'
+        {/* Progress bar (only when dispensing) */}
+        {isDispensing && displayNozzle && (
+          <div className="px-3 pb-1.5">
+            <div className="bg-green-950/60 h-1 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-700"
+                style={{
+                  width: `${displayNozzle.progressPercent || 0}%`,
+                  background: 'linear-gradient(90deg, #166534, #4ade80)',
+                  boxShadow: '0 0 6px #4ade8080',
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Status badge */}
+        <div className={`mx-2 mb-2 rounded-lg border py-1 text-center text-[9px] font-mono font-bold uppercase tracking-widest ${state.badge} ${
+          isDispensing || isAnyUnpaid ? 'animate-pulse' : ''
         }`}>
-          {dispenser.isBlocked   ? '⛔ BLOQUEADA' :
-           isDispensing          ? '⛽ DESPACHANDO' :
-           isAnyUnpaid           ? '💳 COBRO PEND.' :
-           isAnyPrepaid          ? '✓ AUTORIZADA' :
-           isAnyOffline          ? '📡 SIN SEÑAL' :
-           totalPending > 0      ? `💳 ${totalPending} PEND.` :
-           '○ EN ESPERA'}
+          {dispenser.isBlocked  ? '⛔ BLOQUEADA' :
+           isDispensing         ? '⛽ DESPACHANDO' :
+           isAnyUnpaid          ? '💳 COBRO PENDIENTE' :
+           isAnyPrepaid         ? '✓ AUTORIZADA' :
+           isAnyOffline         ? '📡 SIN SEÑAL' :
+           totalPending > 0     ? `💳 ${totalPending} PEND.` :
+                                  '○ EN ESPERA'}
         </div>
       </div>
 
       {/* ── NOZZLE ROWS ── */}
-      <div className="flex flex-col gap-0 mx-2 my-2">
+      <div className="px-3 pt-2.5 pb-2 space-y-1.5">
         {dispenser.isBlocked ? (
-          <div className="flex flex-col items-center gap-1.5 py-3">
-            <Lock className="w-6 h-6 text-red-700/50" />
+          <div className="flex flex-col items-center gap-2 py-2">
+            <Lock className="w-5 h-5 text-red-800/60" />
             <p className="text-[9px] font-mono text-red-700/70 uppercase tracking-widest">Cara Deshabilitada</p>
             <button
               onClick={() => onToggleBlockDispenser(dispenser.id)}
-              className="px-3 py-1 bg-emerald-700/80 hover:bg-emerald-600 text-white text-[9px] font-bold rounded cursor-pointer flex items-center gap-1"
+              className="px-4 py-1.5 bg-emerald-700/80 hover:bg-emerald-600 text-white text-[10px] font-bold rounded-lg cursor-pointer flex items-center gap-1.5 transition-colors"
             >
-              <Unlock className="w-2.5 h-2.5" /> Habilitar
+              <Unlock className="w-3 h-3" /> Habilitar
             </button>
           </div>
         ) : (
           dispenser.nozzles.map((nozzle) => {
             const cfg = NOZZLE_CFG[nozzle.fuelType];
             const price = activePrices[nozzle.fuelType] || 4.19;
-            const lockedByOther = activeNozzle && activeNozzle.fuelType !== nozzle.fuelType;
-            const isNozzleDisp   = nozzle.status === 'Dispensing';
-            const isNozzlePrep   = nozzle.status === 'Prepaid' || nozzle.status === 'Authorized';
-            const isNozzleUnpaid = nozzle.status === 'Unpaid' || nozzle.status === 'EndOfTransaction';
-            const isNozzleBlock  = nozzle.status === 'Blocked';
-            const isNozzleIdle   = nozzle.status === 'Idle' || nozzle.status === 'Ready';
+            const lockedByOther = !!(activeNozzle && activeNozzle.fuelType !== nozzle.fuelType);
+            const isNozzleDisp    = nozzle.status === 'Dispensing';
+            const isNozzlePrep    = nozzle.status === 'Prepaid' || nozzle.status === 'Authorized';
+            const isNozzleUnpaid  = nozzle.status === 'Unpaid' || nozzle.status === 'EndOfTransaction';
+            const isNozzleBlock   = nozzle.status === 'Blocked';
+            const isNozzleIdle    = nozzle.status === 'Idle' || nozzle.status === 'Ready';
             const isNozzleOffline = nozzle.status === 'Offline';
-            const hasPending     = (nozzle.pendingTransactions?.length || 0) > 0;
+            const hasPending      = (nozzle.pendingTransactions?.length || 0) > 0;
 
             return (
               <div
                 key={nozzle.fuelType}
-                className={`flex items-center gap-1.5 px-1.5 py-1.5 rounded-lg border transition-all duration-150 mb-1 ${
-                  lockedByOther   ? 'opacity-30 border-transparent' :
-                  isNozzleOffline ? 'opacity-40 border-slate-700/20 bg-slate-900/20' :
-                  isNozzleDisp   ? 'border-green-700/30 bg-green-950/20' :
-                  isNozzleUnpaid ? 'border-rose-600/40 bg-rose-950/25' :
-                  isNozzlePrep   ? 'border-amber-600/30 bg-amber-950/20' :
-                  isNozzleBlock  ? 'border-red-700/25 bg-red-950/15' :
-                  hasPending     ? 'border-rose-600/20 bg-rose-950/10' :
-                  'border-transparent hover:border-slate-700/30 hover:bg-slate-800/20'
+                className={`flex items-center gap-2 px-2.5 py-2 rounded-xl border transition-all duration-150 ${
+                  lockedByOther    ? 'opacity-25 border-transparent bg-transparent' :
+                  isNozzleOffline  ? 'opacity-30 border-slate-800/30 bg-slate-900/20' :
+                  isNozzleDisp     ? `${cfg.bg} ${cfg.border}` :
+                  isNozzleUnpaid   ? 'border-rose-600/30 bg-rose-950/20' :
+                  isNozzlePrep     ? `${cfg.bg} ${cfg.border}` :
+                  isNozzleBlock    ? 'border-red-900/30 bg-red-950/15' :
+                  hasPending       ? 'border-rose-600/15 bg-rose-950/10' :
+                  'border-transparent hover:border-slate-700/40 hover:bg-slate-800/20'
                 }`}
               >
-                {/* Nozzle color dot + label */}
-                <div className="flex items-center gap-1 min-w-0 flex-1">
-                  <div className="relative flex-shrink-0">
-                    <span className={`w-2 h-2 rounded-full block ${cfg.dot} ${
-                      isNozzleDisp ? 'animate-pulse shadow-sm' : ''
-                    }`} style={{ boxShadow: isNozzleDisp ? `0 0 4px ${cfg.dot.includes('blue') ? '#3b82f6' : cfg.dot.includes('amber') ? '#f59e0b' : cfg.dot.includes('emerald') ? '#10b981' : '#a855f7'}` : 'none' }} />
-                    {hasPending && (
-                      <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-rose-500 text-white text-[6px] font-black rounded-full flex items-center justify-center border border-[#111827]">
-                        {nozzle.pendingTransactions!.length}
-                      </span>
-                    )}
-                  </div>
-                  <span className={`text-[10px] font-mono font-black ${lockedByOther ? 'text-slate-700' : cfg.accent}`}>
-                    {cfg.short}
-                  </span>
-                  <span className={`text-[9px] font-mono ${lockedByOther ? 'text-slate-800' : 'text-slate-600'}`}>
-                    {currencySymbol}{price.toFixed(2)}
-                  </span>
-                  {/* Live amount if dispensing */}
-                  {isNozzleDisp && (
-                    <span className="text-[9px] font-mono font-bold text-green-400 ml-auto">
-                      {currencySymbol}{nozzle.currentAmount.toFixed(2)}
-                    </span>
-                  )}
-                  {isNozzleUnpaid && (
-                    <span className="text-[9px] font-mono font-bold text-rose-400 ml-auto">
-                      {currencySymbol}{nozzle.currentAmount.toFixed(2)}
+                {/* Fuel dot */}
+                <div className="relative flex-shrink-0">
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full block ${cfg.dot} ${isNozzleDisp ? 'animate-pulse' : ''}`}
+                    style={{ boxShadow: isNozzleDisp ? cfg.glow : 'none' }}
+                  />
+                  {hasPending && (
+                    <span className="absolute -top-1 -right-1 w-3 h-3 bg-rose-500 text-white text-[7px] font-black rounded-full flex items-center justify-center border border-[#0d1117]">
+                      {nozzle.pendingTransactions!.length}
                     </span>
                   )}
                 </div>
 
-                {/* Status dot */}
-                <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 shadow-sm ${STATUS_DOT[nozzle.status] || 'bg-slate-700'}`} />
+                {/* Label + price */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-[11px] font-mono font-black ${lockedByOther ? 'text-slate-700' : cfg.text}`}>
+                      {cfg.short}
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-600">
+                      {currencySymbol}{price.toFixed(2)}
+                    </span>
+                  </div>
+                  {/* Live amount while active */}
+                  {(isNozzleDisp || isNozzleUnpaid) && (
+                    <div className={`text-[10px] font-mono font-bold ${isNozzleUnpaid ? 'text-rose-400' : 'text-green-400'}`}>
+                      {currencySymbol}{nozzle.currentAmount.toFixed(2)} · {(unitMeasure === 'Galones' ? nozzle.currentVolume / 3.78541 : nozzle.currentVolume).toFixed(3)} {unitMeasure === 'Litros' ? 'L' : 'G'}
+                    </div>
+                  )}
+                </div>
 
-                {/* Action buttons (icon-only) */}
+                {/* Status chip */}
+                {isNozzleOffline ? (
+                  <span className="text-[9px] font-mono text-slate-700 bg-slate-800/40 px-1.5 py-0.5 rounded">OFFLINE</span>
+                ) : isNozzleBlock ? (
+                  <span className="text-[9px] font-mono text-red-700 bg-red-950/40 px-1.5 py-0.5 rounded">BLOQ.</span>
+                ) : null}
+
+                {/* Action buttons */}
                 {!lockedByOther && !isNozzleOffline && (
-                  <div className="flex items-center gap-0.5 flex-shrink-0">
+                  <div className="flex items-center gap-1 flex-shrink-0">
                     {isNozzleIdle && onDirectLiftAndStart && (
                       <button
                         onClick={() => onDirectLiftAndStart(dispenser.id, nozzle.fuelType)}
-                        className="p-1 rounded bg-amber-500/80 hover:bg-amber-400 text-amber-900 cursor-pointer transition-all"
+                        className="w-7 h-7 rounded-lg bg-amber-500/20 hover:bg-amber-500/40 text-amber-400 flex items-center justify-center cursor-pointer transition-colors border border-amber-500/20"
                         title="Descolgar e iniciar"
                       >
-                        <PlayCircle className="w-3 h-3" />
+                        <PlayCircle className="w-3.5 h-3.5" />
                       </button>
                     )}
-                    {isNozzleIdle && (
+                    {isNozzleIdle && canPreauth && (
                       <button
                         onClick={() => onPreAuthorize(dispenser.id, nozzle.fuelType)}
-                        className="p-1 rounded bg-slate-700 hover:bg-emerald-700 text-slate-300 hover:text-white cursor-pointer transition-all"
-                        title="Pre-Autorizar"
+                        className="w-7 h-7 rounded-lg bg-slate-700/60 hover:bg-emerald-700/60 text-slate-400 hover:text-emerald-300 flex items-center justify-center cursor-pointer transition-all border border-slate-700/50 hover:border-emerald-600/40"
+                        title="Pre-autorizar despacho"
                       >
-                        <CheckCircle className="w-3 h-3" />
+                        <CheckCircle className="w-3.5 h-3.5" />
                       </button>
                     )}
                     {isNozzlePrep && (
                       <button
                         onClick={() => onStartFueling(dispenser.id, nozzle.fuelType)}
-                        className="p-1 rounded bg-amber-500 hover:bg-amber-400 text-amber-900 cursor-pointer animate-pulse"
-                        title="Surtir"
+                        className="w-7 h-7 rounded-lg bg-amber-500/30 hover:bg-amber-500/50 text-amber-300 flex items-center justify-center cursor-pointer animate-pulse border border-amber-500/30"
+                        title="Iniciar surtido"
                       >
-                        <Fuel className="w-3 h-3" />
+                        <Fuel className="w-3.5 h-3.5" />
                       </button>
                     )}
                     {isNozzleDisp && (
                       <button
                         onClick={() => onEmergencyStop(dispenser.id, nozzle.fuelType)}
-                        className="p-1 rounded bg-red-700 hover:bg-red-600 text-white cursor-pointer transition-all"
-                        title="Detener → agrega a despachos pendientes"
+                        className="w-7 h-7 rounded-lg bg-red-700/40 hover:bg-red-600/60 text-red-300 flex items-center justify-center cursor-pointer transition-colors border border-red-700/30"
+                        title="Detener despacho"
                       >
-                        <StopCircle className="w-3 h-3" />
+                        <StopCircle className="w-3.5 h-3.5" />
                       </button>
                     )}
                     {isNozzleUnpaid && (
                       <button
                         onClick={() => { if (onPressNozzle) onPressNozzle(dispenser.id, nozzle.fuelType); }}
-                        className="p-1 rounded bg-rose-600 hover:bg-rose-500 text-white cursor-pointer animate-bounce"
-                        title="Cobrar y cerrar transacción"
+                        className="w-7 h-7 rounded-lg bg-rose-600/40 hover:bg-rose-500/60 text-rose-200 flex items-center justify-center cursor-pointer animate-bounce border border-rose-500/30"
+                        title="Cobrar transacción"
                       >
-                        <DollarSign className="w-3 h-3" />
+                        <DollarSign className="w-3.5 h-3.5" />
                       </button>
                     )}
                     {isNozzleBlock && (
                       <button
                         onClick={() => onResetPump(dispenser.id, nozzle.fuelType)}
-                        className="p-1 rounded bg-sky-900/40 text-sky-400 hover:bg-sky-900/60 cursor-pointer"
+                        className="w-7 h-7 rounded-lg bg-sky-900/30 text-sky-400 hover:bg-sky-800/40 flex items-center justify-center cursor-pointer border border-sky-800/30"
                         title="Resetear manguera"
                       >
-                        <RefreshCw className="w-3 h-3" />
+                        <RefreshCw className="w-3.5 h-3.5" />
                       </button>
                     )}
                     {hasPending && !isNozzleDisp && !isNozzlePrep && !isNozzleUnpaid && !isNozzleBlock && (
                       <button
                         onClick={() => { if (onPressNozzle) onPressNozzle(dispenser.id, nozzle.fuelType); }}
-                        className="p-1 rounded bg-rose-900/50 text-rose-400 hover:bg-rose-900/70 cursor-pointer animate-pulse"
-                        title="Gestionar despachos pendientes"
+                        className="w-7 h-7 rounded-lg bg-rose-900/40 text-rose-400 hover:bg-rose-800/50 flex items-center justify-center cursor-pointer animate-pulse border border-rose-800/30"
+                        title="Gestionar pendientes"
                       >
-                        <DollarSign className="w-3 h-3" />
+                        <DollarSign className="w-3.5 h-3.5" />
                       </button>
                     )}
                   </div>
-                )}
-                {isNozzleOffline && (
-                  <span className="text-[8px] font-mono text-slate-700 ml-auto">offline</span>
                 )}
               </div>
             );
@@ -455,35 +530,18 @@ export default function CaraCard({
         )}
       </div>
 
-      {/* ── PENDING DISPATCHES quick button ── */}
+      {/* Pending dispatches button */}
       {totalPending > 0 && !dispenser.isBlocked && (
         <button
           onClick={() => { if (firstPending && onPressNozzle) onPressNozzle(dispenser.id, firstPending.fuelType); }}
-          className="mx-2 mb-2 py-1.5 rounded-lg border border-rose-500/30 bg-rose-950/25 hover:bg-rose-900/35 text-rose-300 text-[9px] font-bold font-mono uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer transition-all"
+          className="mx-3 mb-3 py-2 rounded-xl border border-rose-500/25 bg-rose-950/20 hover:bg-rose-900/30 text-rose-300 text-[10px] font-bold font-mono uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer transition-all"
         >
-          <span className="w-4 h-4 rounded-full bg-rose-500 text-white text-[8px] font-black flex items-center justify-center">{totalPending}</span>
-          <span>Gestionar Despachos</span>
+          <span className="w-4 h-4 rounded-full bg-rose-500 text-white text-[8px] font-black flex items-center justify-center">
+            {totalPending}
+          </span>
+          Gestionar Despachos Pendientes
         </button>
       )}
-
-      {/* ── BOTTOM LED strip ── */}
-      <div className="flex items-center justify-between px-2.5 py-1 bg-[#0a0e14]/80 border-t border-slate-800/40">
-        {/* Progress LEDs */}
-        <div className="flex items-center gap-0.5">
-          {[...Array(5)].map((_, i) => (
-            <div key={i} className={`w-1 h-1 rounded-full transition-all duration-300 ${
-              isDispensing && i <= Math.floor((displayNozzle?.progressPercent || 0) / 20)
-                ? 'bg-green-400 shadow-sm'
-                : 'bg-slate-800 border border-slate-700/20'
-            }`} />
-          ))}
-        </div>
-        {/* Bolt decorations */}
-        <div className="flex items-center gap-1">
-          <div className="w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-700/30" />
-          <div className="w-1.5 h-1.5 rounded-full bg-slate-800 border border-slate-700/30" />
-        </div>
-      </div>
     </div>
   );
 }

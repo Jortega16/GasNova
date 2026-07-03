@@ -127,6 +127,7 @@ class PrintClosureRequest(BaseModel):
     transaction_count: int
     fuel_breakdown:    Optional[List[Dict[str, Any]]] = None
     payment_breakdown: Optional[List[Dict[str, Any]]] = None
+    counter_breakdown: Optional[List[Dict[str, Any]]] = None
     station_name:      Optional[str] = None
     station_ruc:       Optional[str] = None
 
@@ -458,10 +459,38 @@ def _build_closure_bytes(req: PrintClosureRequest, cfg: Dict[str, Any] = _print_
             buf += _lr_bytes(f"  {method}:", f"{cur}{amt:.2f}", W)
         buf += _div('-', W)
 
+    if req.counter_breakdown:
+        unit_measure = cfg.get("unit_measure", "Galones")
+        unit_suffix = "Lt" if unit_measure == "Litros" else "Gal"
+        buf += ALIGN_CTR
+        buf += _enc("CONTADORES POR CARA") + LF
+        buf += ALIGN_LEFT
+        buf += _div('-', W)
+        for cb in req.counter_breakdown:
+            name         = _safe(cb.get("pump_name", f"Cara {cb.get('pump_id', '?')}"))
+            sys_vol      = cb.get("system_volume", 0.0)
+            mech_vol     = cb.get("mech_volume", 0.0)
+            diff         = mech_vol - sys_vol
+            diff_str     = f"{'+' if diff >= 0 else ''}{diff:.2f} {unit_suffix}"
+            buf += _enc(f"  {name[:W-2]}") + LF
+            buf += _lr_bytes("    Sistema:", f"{sys_vol:.2f} {unit_suffix}", W)
+            buf += _lr_bytes("    Mecanico:", f"{mech_vol:.2f} {unit_suffix}", W)
+            buf += _lr_bytes("    Diferencia:", diff_str, W)
+        buf += _div('-', W)
+
     buf += _div('=', W)
     buf += ALIGN_CTR
     buf += _enc(_safe(cfg["closure_footer_1"])) + LF
     buf += _enc(_safe(cfg["closure_footer_2"])) + LF
+    buf += _div('-', W)
+
+    # Líneas de firma
+    line = "_" * max(W - 24, 16)
+    buf += LF
+    buf += ALIGN_LEFT
+    buf += _enc(f"Operador Saliente: {line}") + LF
+    buf += LF
+    buf += _enc(f"Supervisor POS:    {line}") + LF
     buf += _div('-', W)
 
     buf += FEED_N(feed_n)

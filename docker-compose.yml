@@ -1,0 +1,58 @@
+services:
+
+  # ── Base de datos ────────────────────────────────────────────────────────────
+  gasnova-db:
+    image: postgres:16-alpine
+    container_name: gasnova-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gasnova
+      POSTGRES_PASSWORD: gasnova_secret
+      POSTGRES_DB: gasnovalocal
+    volumes:
+      - gasnova_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gasnova -d gasnovalocal"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend FastAPI ──────────────────────────────────────────────────────────
+  gasnova-backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/jortega16/gasnova-backend:latest}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gasnova-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://gasnova:gasnova_secret@gasnova-db:5432/gasnovalocal
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/logs:/app/logs
+      - ./backend/reports:/app/reports
+      # CUPS socket para impresora térmica (Linux)
+      # - /var/run/cups/cups.sock:/var/run/cups/cups.sock
+    ports:
+      - "8002:8000"
+    depends_on:
+      gasnova-db:
+        condition: service_healthy
+
+  # ── Frontend (nginx) ─────────────────────────────────────────────────────────
+  gasnova-frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/jortega16/gasnova-frontend:latest}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: gasnova-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - gasnova-backend
+
+volumes:
+  gasnova_data:
+    name: gasnova_data
