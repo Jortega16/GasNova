@@ -76,6 +76,7 @@ export interface PrintReceiptParams {
   client_name?: string;
   client_ruc?: string;
   date_time?: string;
+  print_station_id?: string;
 }
 
 export interface PrintClosureParams {
@@ -90,6 +91,7 @@ export interface PrintClosureParams {
   fuel_breakdown?: unknown[];
   payment_breakdown?: unknown[];
   counter_breakdown?: unknown[];
+  print_station_id?: string;
 }
 
 export interface PrintNextShiftParams {
@@ -99,6 +101,14 @@ export interface PrintNextShiftParams {
   previous_shift_name?: string;
   operator_name: string;
   start_time: string;
+  print_station_id?: string;
+}
+
+export interface PrintStation {
+  id: string;
+  name: string;
+  mode: "local" | "network" | "agent";
+  target: string;
 }
 
 export interface CreateUserParams {

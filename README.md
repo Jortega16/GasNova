@@ -11,6 +11,7 @@ Sistema de gestión de estación de servicio integrado con el controlador Techno
 - **Persistencia de auditoría** — cada cierre de turno guarda su desglose de contadores (`counter_breakdown`) en `shift_closures` para trazabilidad histórica.
 - **Permisos por rol** — control de acceso a pantallas y acciones (`usePermissions`, `permissions.ts`) para Administrador, Supervisor y Operador.
 - **Recuperación de transacciones** — sincronización desde la tarjeta SD del PTS-2 (`sync.py`) para no perder ventas si el WebSocket estuvo caído.
+- **Impresión multi-POS** — soporta varias PCs accediendo a la misma estación, cada una con su propia impresora (USB, red o vía agente remoto). Ver [Impresión en múltiples POS](#impresión-en-múltiples-pos).
 
 ## Estructura
 
@@ -92,6 +93,35 @@ GitHub Actions construye y sube `ghcr.io/jortega16/gasnova-backend` y `ghcr.io/j
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
 ```
+
+## Impresión en múltiples POS
+
+Todas las PCs de una estación acceden al mismo backend central (`https://gasnova.local`), pero cada una puede tener su **propia impresora física**. GasNova separa "qué imprimir" (calculado en el backend) de "dónde se imprime físicamente" (por PC), a través de **estaciones de impresión** configurables en **Ajustes → Impresora → Estaciones de Impresión (Multi-POS)**.
+
+Cada estación (`POS-1`, `POS-2`, ...) define un modo de impresión:
+
+| Modo | Cuándo usarlo | Campo destino |
+|---|---|---|
+| **Local** | Impresora USB conectada a la misma PC donde corre el backend (`gasnova-backend`). | Vacío = autodetecta; o el nombre exacto de la impresora. |
+| **Red directa** | Impresora térmica con IP propia (Ethernet/WiFi). El backend le envía los bytes ESC/POS directo por TCP, sin importar qué PC hizo la venta. | `IP:puerto`, ej. `192.168.1.50:9100`. |
+| **Agente remoto** | Impresora USB conectada a **otra PC** (no la del backend). Esa PC corre un agente liviano (`backend/print_agent/`) que recibe los bytes por HTTP y los envía a su impresora local. | URL del agente, ej. `http://192.168.1.20:9200`. |
+
+### Configurar una PC con impresora USB remota
+
+En la PC que tiene la impresora conectada (no necesita el resto del backend):
+
+```bash
+cd backend/print_agent
+bash run_agent.sh        # o run_agent.bat en Windows
+```
+
+Esto instala sus dependencias en un venv local y deja el agente escuchando en el puerto `9200`. Luego, en **Ajustes → Impresora**, se crea la estación con modo **Agente remoto** apuntando a `http://IP_DE_ESA_PC:9200`.
+
+### Identificar cada PC como su estación
+
+Cada navegador guarda localmente (vía `localStorage`) a qué estación pertenece, en el selector **"Esta PC es la estación"** dentro del mismo panel. Así, cuando esa PC imprime un ticket o un cierre de turno, el backend sabe a cuál impresora enviarlo.
+
+Si no se configura ninguna estación, el sistema usa la impresora local única del servidor (comportamiento original, válido para instalaciones de un solo POS).
 
 ## Backend
 

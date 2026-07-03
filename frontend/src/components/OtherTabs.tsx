@@ -5,8 +5,10 @@
 
 import React, { useState, useEffect } from 'react';
 import { Transaction, PaymentMethod, DispenserState, FuelType, NozzleState } from '../types';
-import { TrendingUp, CreditCard, HelpCircle, Star, ShieldCheck, Mail, ShieldAlert, Check, Terminal, Users, UserCheck, Plus, BarChart3, Database, Clock, DollarSign, Trash2, Edit2, Palette, Eye, Settings, RefreshCw, Printer, Scissors, FileText, Receipt, ChevronDown, ChevronUp, Save, Wifi, WifiOff, Download } from 'lucide-react';
+import { TrendingUp, CreditCard, HelpCircle, Star, ShieldCheck, Mail, ShieldAlert, Check, Terminal, Users, UserCheck, Plus, BarChart3, Database, Clock, DollarSign, Trash2, Edit2, Palette, Eye, Settings, RefreshCw, Printer, Scissors, FileText, Receipt, ChevronDown, ChevronUp, Save, Wifi, WifiOff, Download, Server, X } from 'lucide-react';
 import { api } from '../api';
+import type { PrintStation } from '../api/types';
+import { getPrintStationId, setPrintStationId } from '../printStation';
 
 const getPrintApiBaseUrl = () => {
   const envUrl = (import.meta as any).env.VITE_API_BASE_URL;
@@ -130,6 +132,14 @@ export default function OtherTabs({
   const [caraConfigSaving, setCaraConfigSaving] = useState(false);
   const [pts2Syncing, setPts2Syncing] = useState(false);
   const [pts2SyncResult, setPts2SyncResult] = useState<'ok' | 'error' | null>(null);
+
+  // ── Estaciones de impresión multi-POS ─────────────────────────────────────
+  const [printStations, setPrintStations] = useState<PrintStation[]>([]);
+  const [stationsSaving, setStationsSaving] = useState(false);
+  const [stationsSaved, setStationsSaved] = useState(false);
+  const [stationTestResult, setStationTestResult] = useState<Record<string, 'ok' | 'error'>>({});
+  const [stationTesting, setStationTesting] = useState<string | null>(null);
+  const [thisStationId, setThisStationId] = useState<string>(getPrintStationId());
 
   // ── Printer / Template Settings state ─────────────────────────────────────
   const [settingsTab, setSettingsTab] = useState<'general' | 'printer' | 'station'>('general');
@@ -363,6 +373,59 @@ export default function OtherTabs({
     } finally {
       setPrinterSaving(false);
     }
+  };
+
+  useEffect(() => {
+    if (settingsTab !== 'printer') return;
+    api.getPrintStations().then(res => {
+      if (res.ok && res.data) setPrintStations(res.data.stations || []);
+    }).catch(() => { /* offline */ });
+  }, [settingsTab]);
+
+  const handleAddStation = () => {
+    const nextId = `POS-${printStations.length + 1}`;
+    setPrintStations(prev => [...prev, { id: nextId, name: `Estación ${prev.length + 1}`, mode: 'local', target: '' }]);
+  };
+
+  const handleUpdateStation = (index: number, patch: Partial<PrintStation>) => {
+    setPrintStations(prev => prev.map((s, i) => i === index ? { ...s, ...patch } : s));
+  };
+
+  const handleRemoveStation = (index: number) => {
+    setPrintStations(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSaveStations = async () => {
+    setStationsSaving(true);
+    try {
+      const res = await api.updatePrintStations(printStations);
+      if (res.ok) {
+        setStationsSaved(true);
+        setTimeout(() => setStationsSaved(false), 3000);
+      }
+    } catch (e) {
+      console.error('Error guardando estaciones:', e);
+    } finally {
+      setStationsSaving(false);
+    }
+  };
+
+  const handleTestStation = async (stationId: string) => {
+    setStationTesting(stationId);
+    setStationTestResult(prev => ({ ...prev, [stationId]: undefined as any }));
+    try {
+      const res = await api.testPrintStation(stationId);
+      setStationTestResult(prev => ({ ...prev, [stationId]: res.ok ? 'ok' : 'error' }));
+    } catch {
+      setStationTestResult(prev => ({ ...prev, [stationId]: 'error' }));
+    } finally {
+      setStationTesting(null);
+    }
+  };
+
+  const handleSetThisStation = (stationId: string) => {
+    setPrintStationId(stationId);
+    setThisStationId(stationId);
   };
 
   const handleSyncFromPts2 = async () => {
@@ -1072,6 +1135,150 @@ export default function OtherTabs({
                         {printerTesting ? 'Imprimiendo...' : 'Imprimir Prueba + Corte'}
                       </button>
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Estaciones de impresión multi-POS */}
+              <div className="bg-white rounded-xl border border-neutral-200 shadow p-5 space-y-4">
+                <div>
+                  <h3 className="font-sans font-extrabold text-sm text-slate-800 flex items-center gap-2 border-b pb-2">
+                    <Server className="w-4 h-4 text-[#355e9e]" />
+                    Estaciones de Impresión (Multi-POS)
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Si tienes varias PCs accediendo a esta misma estación (cada una con su propia impresora),
+                    define aquí cada POS y a dónde debe imprimir. Luego, en cada PC, indica cuál es "esta estación"
+                    para que sus tickets salgan en la impresora correcta.
+                  </p>
+                </div>
+
+                {/* Esta PC es la estación... */}
+                <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 flex items-center gap-3 flex-wrap">
+                  <span className="text-xs font-bold text-indigo-800 whitespace-nowrap">Esta PC es la estación:</span>
+                  <select
+                    value={thisStationId}
+                    onChange={e => handleSetThisStation(e.target.value)}
+                    className="border border-indigo-300 rounded px-2 py-1 text-xs font-mono bg-white cursor-pointer flex-1 min-w-[160px]"
+                  >
+                    <option value="">-- Impresora local única (comportamiento clásico) --</option>
+                    {printStations.map(s => (
+                      <option key={s.id} value={s.id}>{s.id} — {s.name}</option>
+                    ))}
+                  </select>
+                  {thisStationId && (
+                    <span className="text-[10px] text-indigo-600 font-semibold">
+                      Guardado en este navegador — los tickets de esta PC saldrán por {thisStationId}
+                    </span>
+                  )}
+                </div>
+
+                {/* Lista de estaciones */}
+                <div className="space-y-2">
+                  {printStations.map((s, i) => (
+                    <div key={i} className="border border-neutral-200 rounded-lg p-3 bg-slate-50 space-y-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <input
+                          type="text"
+                          value={s.id}
+                          onChange={e => handleUpdateStation(i, { id: e.target.value })}
+                          placeholder="POS-1"
+                          className="w-24 border border-neutral-300 rounded px-2 py-1 text-xs font-mono font-bold bg-white"
+                        />
+                        <input
+                          type="text"
+                          value={s.name}
+                          onChange={e => handleUpdateStation(i, { name: e.target.value })}
+                          placeholder="Nombre (ej. Caja Principal)"
+                          className="flex-1 min-w-[140px] border border-neutral-300 rounded px-2 py-1 text-xs bg-white"
+                        />
+                        <select
+                          value={s.mode}
+                          onChange={e => handleUpdateStation(i, { mode: e.target.value as PrintStation['mode'] })}
+                          className="border border-neutral-300 rounded px-2 py-1 text-xs bg-white cursor-pointer"
+                        >
+                          <option value="local">Local (impresora de esta PC servidor)</option>
+                          <option value="network">Red directa (impresora con IP propia)</option>
+                          <option value="agent">Agente remoto (PC con impresora USB)</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveStation(i)}
+                          className="p-1.5 text-red-500 hover:bg-red-100 rounded cursor-pointer"
+                          title="Eliminar estación"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {s.mode !== 'local' && (
+                        <input
+                          type="text"
+                          value={s.target}
+                          onChange={e => handleUpdateStation(i, { target: e.target.value })}
+                          placeholder={s.mode === 'network' ? 'IP:puerto de la impresora, ej. 192.168.1.50:9100' : 'URL del agente, ej. http://192.168.1.20:9200'}
+                          className="w-full border border-neutral-300 rounded px-2 py-1 text-xs font-mono bg-white"
+                        />
+                      )}
+                      {s.mode === 'local' && (
+                        <input
+                          type="text"
+                          value={s.target}
+                          onChange={e => handleUpdateStation(i, { target: e.target.value })}
+                          placeholder="(Opcional) nombre exacto de la impresora local — vacío = autodetectar"
+                          className="w-full border border-neutral-300 rounded px-2 py-1 text-xs font-mono bg-white"
+                        />
+                      )}
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleTestStation(s.id)}
+                          disabled={stationTesting === s.id || !s.id}
+                          className="px-2.5 py-1 bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-bold rounded cursor-pointer disabled:opacity-50"
+                        >
+                          {stationTesting === s.id ? 'Probando...' : 'Probar impresión'}
+                        </button>
+                        {stationTestResult[s.id] === 'ok' && (
+                          <span className="text-[10px] text-emerald-700 font-bold flex items-center gap-1"><Check className="w-3 h-3" /> OK</span>
+                        )}
+                        {stationTestResult[s.id] === 'error' && (
+                          <span className="text-[10px] text-red-600 font-bold">✗ Sin respuesta</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {printStations.length === 0 && (
+                    <div className="p-4 text-center text-xs text-slate-400 italic bg-slate-50 border rounded-lg">
+                      No hay estaciones configuradas — se usará la impresora local única (comportamiento clásico de un solo POS).
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between border-t border-slate-200 pt-3">
+                  <button
+                    type="button"
+                    onClick={handleAddStation}
+                    className="flex items-center gap-1.5 text-xs font-bold text-[#355e9e] hover:text-[#1b365d] cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Agregar estación
+                  </button>
+                  <div className="flex items-center gap-2">
+                    {stationsSaved && (
+                      <span className="text-emerald-700 text-xs font-bold flex items-center gap-1">
+                        <Check className="w-3.5 h-3.5" /> Guardado
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleSaveStations}
+                      disabled={stationsSaving}
+                      className="px-4 py-1.5 bg-[#1b365d] hover:bg-[#2a4f8f] text-white text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      {stationsSaving ? 'Guardando...' : 'Guardar Estaciones'}
+                    </button>
                   </div>
                 </div>
               </div>

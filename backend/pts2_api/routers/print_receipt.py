@@ -8,19 +8,28 @@ Usa ESC/POS binario puro enviado via `lp -o raw` para:
 
 from __future__ import annotations
 
+import base64
+import json
 import subprocess
-import tempfile
 import os
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import SystemSetting
+from ..printer_engine import (
+    detect_local_printer,
+    list_printers as _engine_list_printers,
+    send_raw as _engine_send_raw,
+)
 
 router = APIRouter(prefix="/print", tags=["print"])
+
+STATIONS_SETTING_KEY = "print_stations"
 
 def _get_dynamic_config(db: Session) -> Dict[str, Any]:
     """Combina la config en memoria con los valores dinamicos de la base de datos."""
@@ -114,6 +123,7 @@ class PrintReceiptRequest(BaseModel):
     client_name:  Optional[str] = None
     client_ruc:   Optional[str] = None
     date_time:    Optional[str] = None
+    print_station_id: Optional[str] = None  # a qué POS/estación imprimir (ver /print/stations)
 
 
 class PrintClosureRequest(BaseModel):
@@ -130,6 +140,7 @@ class PrintClosureRequest(BaseModel):
     counter_breakdown: Optional[List[Dict[str, Any]]] = None
     station_name:      Optional[str] = None
     station_ruc:       Optional[str] = None
+    print_station_id:  Optional[str] = None
 
 
 class PrintNextShiftRequest(BaseModel):
@@ -140,7 +151,8 @@ class PrintNextShiftRequest(BaseModel):
     operator_name:       str
     start_time:          str
     station_name:        Optional[str] = None
-    station_ruc:         Optional[str] = None
+    station_ruc:          Optional[str] = None
+    print_station_id:    Optional[str] = None
 
 
 class PrintConfigUpdate(BaseModel):
@@ -590,228 +602,218 @@ def _build_test_bytes() -> bytes:
     return bytes(buf)
 
 
-# ─── Send bytes to printer via CUPS raw ───────────────────────────────────────
+# ─── Impresión: local, red o agente remoto ────────────────────────────────────
+# Ver backend/pts2_api/printer_engine.py para list_printers/send_raw compartidos
+# con el agente standalone (backend/print_agent/agent.py).
 
 def _list_printers() -> List[str]:
-    """Lista todas las impresoras disponibles (CUPS en Unix, Win32 Spooler en Windows)."""
-    import platform
-    if platform.system() == 'Windows':
-        try:
-            import win32print
-            printers = win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS)
-            return [p[2] for p in printers]
-        except Exception as e:
-            print(f"[print_receipt] Error enumerando impresoras en Windows: {e}")
-            return []
-
-    try:
-        result = subprocess.run(
-            ["lpstat", "-a"],
-            capture_output=True, text=True
-        )
-        printers = []
-        for line in result.stdout.splitlines():
-            parts = line.strip().split()
-            if parts:
-                printers.append(parts[0])
-        return printers
-    except Exception as e:
-        print(f"[print_receipt] Error listando impresoras en Unix: {e}")
-        return []
+    return _engine_list_printers()
 
 
 def _detect_printer() -> Optional[str]:
-    """Retorna la impresora configurada si existe, o la primera POS disponible."""
-    configured = _print_config.get("printer_name", "")
-    
-    # Si la impresora configurada parece de red (IP o tcp://), retornar esa directamente
-    import re
-    if configured:
-        target = configured.strip()
-        if target.lower().startswith("tcp://") or ":" in target or re.match(r'^(\d{1,3}\.){3}\d{1,3}$', target):
-            return configured
-
-    all_printers = _list_printers()
-
-    # Primero intentar la configurada
-    if configured and configured in all_printers:
-        return configured
-
-    # Buscar cualquier POS
-    for p in all_printers:
-        if "POS" in p.upper() or "pos" in p.lower():
-            return p
-
-    return all_printers[0] if all_printers else None
+    """Retorna la impresora local configurada globalmente (comportamiento legado,
+    usado cuando una petición no especifica station_id — instalaciones de un solo POS)."""
+    return detect_local_printer(_print_config.get("printer_name", ""))
 
 
-def _send_raw(data: bytes, printer_name: str) -> tuple[bool, str]:
-    """Envía bytes ESC/POS crudos a la impresora (USB local o red TCP)."""
-    # 1. Comprobar si es una impresora de red (TCP/IP)
-    is_network = False
-    host = ""
-    port = 9100  # Puerto ESC/POS por defecto
-    
-    target = printer_name.strip()
-    if target.lower().startswith("tcp://"):
-        target = target[6:]
-        is_network = True
-        
-    if ":" in target:
-        parts = target.split(":")
-        if len(parts) == 2 and parts[1].isdigit():
-            host = parts[0]
-            port = int(parts[1])
-            is_network = True
-    elif not is_network:
-        import re
-        if re.match(r'^(\d{1,3}\.){3}\d{1,3}$', target):
-            host = target
-            is_network = True
-            
-    if is_network:
-        if not host:
-            host = target
-        import socket
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(10.0)
-                s.connect((host, port))
-                s.sendall(data)
-            return True, f"Impreso exitosamente vía red TCP: {host}:{port}"
-        except Exception as e:
-            return False, f"Error imprimiendo en red a {host}:{port}: {str(e)}"
+class Station(BaseModel):
+    id:     str
+    name:   str
+    mode:   str  # "local" | "network" | "agent"
+    target: str = ""  # nombre de impresora local, "ip:port" de red, o URL base del agente
 
-    # 2. Impresión local por Spooler de Windows o CUPS de Unix
-    import platform
-    if platform.system() == 'Windows':
-        try:
-            import win32print
-            hPrinter = win32print.OpenPrinter(printer_name)
-            try:
-                hJob = win32print.StartDocPrinter(hPrinter, 1, ("GasNova Ticket", None, "RAW"))
-                try:
-                    win32print.StartPagePrinter(hPrinter)
-                    win32print.WritePrinter(hPrinter, data)
-                    win32print.EndPagePrinter(hPrinter)
-                finally:
-                    win32print.EndDocPrinter(hPrinter)
-            finally:
-                win32print.ClosePrinter(hPrinter)
-            return True, f"Impreso exitosamente en Windows: {printer_name}"
-        except Exception as e:
-            return False, str(e)
 
-    # Unix fallback (CUPS lp -o raw)
-    with tempfile.NamedTemporaryFile(
-        mode='wb', suffix='.bin', delete=False
-    ) as f:
-        f.write(data)
-        tmp_path = f.name
-
+def _get_stations(db: Session) -> List[Dict[str, Any]]:
+    row = db.query(SystemSetting).filter(SystemSetting.key == STATIONS_SETTING_KEY).first()
+    if not row or not row.value:
+        return []
     try:
-        result = subprocess.run(
-            ["lp", "-d", printer_name, "-o", "raw", tmp_path],
-            capture_output=True, text=True, timeout=15
-        )
-        msg = result.stdout.strip() or result.stderr.strip()
-        print(f"[ESC/POS raw] printer={printer_name} rc={result.returncode} {msg}")
-        return result.returncode == 0, msg
-    except subprocess.TimeoutExpired:
-        return False, "Timeout enviando a impresora"
+        return json.loads(row.value)
+    except Exception:
+        return []
+
+
+def _save_stations(db: Session, stations: List[Dict[str, Any]]) -> None:
+    row = db.query(SystemSetting).filter(SystemSetting.key == STATIONS_SETTING_KEY).first()
+    value = json.dumps(stations)
+    if row:
+        row.value = value
+    else:
+        row = SystemSetting(key=STATIONS_SETTING_KEY, value=value)
+        db.add(row)
+    db.commit()
+
+
+def _find_station(db: Session, station_id: str) -> Optional[Dict[str, Any]]:
+    for s in _get_stations(db):
+        if s.get("id") == station_id:
+            return s
+    return None
+
+
+def _send_via_agent(agent_url: str, data: bytes) -> tuple[bool, str]:
+    """Reenvía los bytes ESC/POS al agente de impresión local de otra PC."""
+    url = agent_url.rstrip("/") + "/print-raw"
+    try:
+        payload = {"data_b64": base64.b64encode(data).decode("ascii")}
+        resp = httpx.post(url, json=payload, timeout=15.0)
+        if resp.status_code == 200:
+            body = resp.json()
+            return True, body.get("message", "Impreso vía agente remoto")
+        return False, f"Agente respondió {resp.status_code}: {resp.text}"
     except Exception as e:
-        return False, str(e)
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+        return False, f"No se pudo contactar al agente en {agent_url}: {str(e)}"
+
+
+def _resolve_and_send(data: bytes, db: Session, station_id: Optional[str]) -> tuple[bool, str, str]:
+    """Envía los bytes a la impresora que corresponda según la estación.
+
+    Retorna (ok, mensaje, descripcion_destino).
+    - Sin station_id: comportamiento legado, impresora local única del servidor.
+    - mode="local"/"network": envío directo (misma lógica que antes, vía printer_engine).
+    - mode="agent": reenvía por HTTP al agente instalado en la PC de esa estación.
+    """
+    if not station_id:
+        printer = _detect_printer()
+        if not printer:
+            return False, "No hay impresora disponible.", ""
+        ok, msg = _engine_send_raw(data, printer)
+        return ok, msg, printer
+
+    station = _find_station(db, station_id)
+    if not station:
+        return False, f"Estación '{station_id}' no está configurada en Ajustes.", ""
+
+    mode = station.get("mode", "local")
+    target = station.get("target", "")
+
+    if mode == "agent":
+        if not target:
+            return False, f"Estación '{station_id}' no tiene URL de agente configurada.", ""
+        ok, msg = _send_via_agent(target, data)
+        return ok, msg, f"agente:{target}"
+
+    # mode == "local" o "network": mismo mecanismo, printer_engine detecta cuál es
+    printer = target or _detect_printer()
+    if not printer:
+        return False, f"Estación '{station_id}' no tiene impresora disponible.", ""
+    ok, msg = _engine_send_raw(data, printer)
+    return ok, msg, printer
 
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
 @router.post("/receipt")
 async def print_receipt(req: PrintReceiptRequest, db: Session = Depends(get_db)):
-    """Imprime un ticket/factura usando ESC/POS binario puro con corte automatico."""
-    printer = _detect_printer()
-    if not printer:
-        raise HTTPException(status_code=503, detail="No hay impresora disponible.")
+    """Imprime un ticket/factura usando ESC/POS binario puro con corte automatico.
 
+    Si `print_station_id` viene informado, se envía a la impresora de esa
+    estación (local, red o agente remoto según /print/stations). Sin
+    `print_station_id`, usa la impresora local única configurada globalmente
+    (comportamiento legado para instalaciones de un solo POS).
+    """
     cfg = _get_dynamic_config(db)
     data = _build_receipt_bytes(req, cfg)
-    ok, msg = _send_raw(data, printer)
+    ok, msg, target = _resolve_and_send(data, db, req.print_station_id)
 
     if not ok:
         raise HTTPException(status_code=500, detail=f"Error de impresion: {msg}")
 
     return {
         "ok": True,
-        "printer": printer,
+        "printer": target,
         "doc_number": req.doc_number,
         "bytes_sent": len(data),
-        "message": f"Comprobante {req.doc_number} enviado a {printer}"
+        "message": f"Comprobante {req.doc_number} enviado a {target}"
     }
 
 
 @router.post("/closure")
 async def print_closure(req: PrintClosureRequest, db: Session = Depends(get_db)):
     """Imprime el reporte de cierre de turno con corte automatico."""
-    printer = _detect_printer()
-    if not printer:
-        raise HTTPException(status_code=503, detail="No hay impresora disponible.")
-
     cfg = _get_dynamic_config(db)
     data = _build_closure_bytes(req, cfg)
-    ok, msg = _send_raw(data, printer)
+    ok, msg, target = _resolve_and_send(data, db, req.print_station_id)
 
     if not ok:
         raise HTTPException(status_code=500, detail=f"Error de impresion: {msg}")
 
     return {
         "ok": True,
-        "printer": printer,
+        "printer": target,
         "shift_id": req.shift_id,
         "bytes_sent": len(data),
-        "message": f"Cierre {req.shift_id} impreso en {printer}"
+        "message": f"Cierre {req.shift_id} impreso en {target}"
     }
 
 
 @router.post("/next-shift")
 async def print_next_shift(req: PrintNextShiftRequest, db: Session = Depends(get_db)):
     """Imprime el ticket de apertura del siguiente turno."""
-    printer = _detect_printer()
-    if not printer:
-        raise HTTPException(status_code=503, detail="No hay impresora disponible.")
-
     cfg = _get_dynamic_config(db)
     data = _build_next_shift_bytes(req, cfg)
-    ok, msg = _send_raw(data, printer)
+    ok, msg, target = _resolve_and_send(data, db, req.print_station_id)
 
     if not ok:
         raise HTTPException(status_code=500, detail=f"Error de impresion: {msg}")
 
     return {
         "ok": True,
-        "printer": printer,
+        "printer": target,
         "shift_id": req.shift_id,
         "bytes_sent": len(data),
-        "message": f"Turno {req.shift_id} impreso en {printer}"
+        "message": f"Turno {req.shift_id} impreso en {target}"
     }
 
 
 @router.post("/test")
-async def print_test():
+async def print_test(print_station_id: Optional[str] = None, db: Session = Depends(get_db)):
     """Imprime pagina de prueba con verificacion de alineacion y corte."""
-    printer = _detect_printer()
-    if not printer:
-        raise HTTPException(status_code=503, detail="No hay impresora disponible.")
-
     data = _build_test_bytes()
-    ok, msg = _send_raw(data, printer)
+    ok, msg, target = _resolve_and_send(data, db, print_station_id)
 
     return {
         "ok": ok,
-        "printer": printer,
+        "printer": target,
+        "bytes_sent": len(data),
+        "message": msg or ("Prueba enviada" if ok else "Error al imprimir")
+    }
+
+
+# ─── Estaciones de impresión (multi-POS) ───────────────────────────────────────
+
+@router.get("/stations")
+async def get_print_stations(db: Session = Depends(get_db)):
+    """Lista las estaciones/POS configuradas y su destino de impresión."""
+    return {"stations": _get_stations(db)}
+
+
+@router.put("/stations")
+async def update_print_stations(stations: List[Station], db: Session = Depends(get_db)):
+    """Reemplaza la lista completa de estaciones de impresión.
+
+    mode:
+      - "local":   impresora USB/local conectada a esta misma PC (servidor).
+      - "network": impresora térmica con IP propia (Ethernet/WiFi), target="ip:puerto".
+      - "agent":   PC remota con impresora USB corriendo el print_agent,
+                   target="http://IP_DE_ESA_PC:9200".
+    """
+    ids = [s.id for s in stations]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(status_code=400, detail="Los IDs de estación deben ser únicos.")
+    data = [s.model_dump() for s in stations]
+    _save_stations(db, data)
+    return {"ok": True, "stations": data}
+
+
+@router.post("/stations/{station_id}/test")
+async def test_print_station(station_id: str, db: Session = Depends(get_db)):
+    """Imprime una página de prueba en la impresora de una estación específica."""
+    data = _build_test_bytes()
+    ok, msg, target = _resolve_and_send(data, db, station_id)
+    return {
+        "ok": ok,
+        "printer": target,
         "bytes_sent": len(data),
         "message": msg or ("Prueba enviada" if ok else "Error al imprimir")
     }

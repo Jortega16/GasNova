@@ -8,10 +8,12 @@ import type {
   PrintReceiptParams,
   PrintClosureParams,
   PrintNextShiftParams,
+  PrintStation,
   CreateUserParams,
   ScheduledPriceCreateParams,
   PendingTransactionProcessParams,
 } from "./types";
+import { getPrintStationId } from "../printStation";
 
 const getApiBaseUrl = (): string => {
   const envUrl = (import.meta as unknown as { env: Record<string, string> }).env
@@ -340,7 +342,7 @@ export const api = {
   ): Promise<BackendApiResponse> {
     return apiFetch("print/receipt", {
       method: "POST",
-      body: JSON.stringify(params),
+      body: JSON.stringify({ ...params, print_station_id: params.print_station_id ?? getPrintStationId() }),
     });
   },
 
@@ -349,7 +351,7 @@ export const api = {
   ): Promise<BackendApiResponse> {
     return apiFetch("print/closure", {
       method: "POST",
-      body: JSON.stringify(params),
+      body: JSON.stringify({ ...params, print_station_id: params.print_station_id ?? getPrintStationId() }),
     });
   },
 
@@ -358,12 +360,29 @@ export const api = {
   ): Promise<BackendApiResponse> {
     return apiFetch("print/next-shift", {
       method: "POST",
-      body: JSON.stringify(params),
+      body: JSON.stringify({ ...params, print_station_id: params.print_station_id ?? getPrintStationId() }),
     });
   },
 
   async getPrinterStatus(): Promise<BackendApiResponse> {
     return apiFetch("print/status");
+  },
+
+  async getPrintStations(): Promise<BackendApiResponse<{ stations: PrintStation[] }>> {
+    return apiFetch("print/stations");
+  },
+
+  async updatePrintStations(stations: PrintStation[]): Promise<BackendApiResponse<{ stations: PrintStation[] }>> {
+    return apiFetch("print/stations", {
+      method: "PUT",
+      body: JSON.stringify(stations),
+    });
+  },
+
+  async testPrintStation(stationId: string): Promise<BackendApiResponse> {
+    return apiFetch(`print/stations/${encodeURIComponent(stationId)}/test`, {
+      method: "POST",
+    });
   },
 
   async getPendingTransactions(): Promise<BackendApiResponse<unknown[]>> {
