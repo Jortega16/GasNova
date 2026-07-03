@@ -47,6 +47,20 @@ services:
     depends_on:
       - gasnova-backend
 
+  # ── mDNS: publica gasnova.local en la red local (solo hosts Linux) ─────────
+  # En Windows/macOS no es necesario: basta con renombrar la PC como "gasnova"
+  # (ambos sistemas resuelven <hostname>.local automáticamente vía mDNS).
+  # Para desactivar, comentar este servicio o hacer:
+  #   docker compose up -d --scale gasnova-mdns=0
+  gasnova-mdns:
+    image: flungo/avahi
+    container_name: gasnova-mdns
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      HOST: gasnova
+    privileged: true
+
 volumes:
   gasnova_data:
     name: gasnova_data

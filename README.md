@@ -45,6 +45,15 @@ Ese mismo comando sirve para actualizar más adelante: `docker compose pull && d
 - Frontend: `http://localhost`
 - Backend / Swagger: `http://localhost:8002/docs`
 
+### Acceder como `http://gasnova.local` en la red local
+
+`gasnova.local` es un nombre mDNS que resuelve el sistema operativo, no algo que se configure dentro de Docker. Dos formas de habilitarlo:
+
+- **Windows / macOS (recomendado, sin tocar Docker):** renombrar la PC como `gasnova` en la configuración del equipo. Ambos sistemas traen resolución mDNS nativa y responden automáticamente en `gasnova.local` a cualquier otro dispositivo de la misma red.
+- **Linux:** el `docker-compose.yml` incluye el servicio `gasnova-mdns` (imagen `flungo/avahi`, `network_mode: host`) que anuncia el hostname `gasnova` por mDNS. Se levanta automáticamente con `docker compose up -d`; para desactivarlo, comentar el servicio en `docker-compose.yml`.
+
+Solo funciona dentro de la misma red local (no es un dominio público) y requiere que los dispositivos que acceden tengan soporte mDNS/Bonjour (Windows, macOS y la mayoría de móviles ya lo traen).
+
 Para fijar una versión específica en vez de `:latest`, exporta las variables antes de `pull`/`up`:
 
 ```bash
