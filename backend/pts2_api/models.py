@@ -148,7 +148,7 @@ class User(Base):
     username = Column(String(50), unique=True, nullable=False, index=True)
     role = Column(String(50), nullable=False)
     avatar = Column(String(50), nullable=True)
-    pin = Column(String(10), nullable=False)
+    pin = Column(String(200), nullable=False)  # salt:hash (pbkdf2_hmac), ver security.hash_pin
     status = Column(String(50), default="Active", nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 

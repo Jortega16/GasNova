@@ -43,7 +43,9 @@ services:
     container_name: gasnova-frontend
     restart: unless-stopped
     volumes:
-      - ./certs:/etc/nginx/certs:ro
+      # Sin ":ro" — si la carpeta está vacía, el contenedor genera un
+      # certificado autofirmado temporal aquí mismo al arrancar.
+      - ./certs:/etc/nginx/certs
     ports:
       - "80:80"
       - "443:443"

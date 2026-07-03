@@ -61,6 +61,8 @@ Solo funciona dentro de la misma red local (no es un dominio público) y requier
 
 El frontend sirve HTTPS en el puerto 443 (con redirect automático desde 80) usando un certificado en `./certs/`, montado como volumen en `docker-compose.yml`.
 
+**No requiere ningún paso previo**: si `./certs/` está vacío, el contenedor genera automáticamente un certificado autofirmado temporal al arrancar (el navegador mostrará advertencia de "no seguro" hasta reemplazarlo). Para tener un certificado de confianza sin advertencias:
+
 ```bash
 bash scripts/generate-certs.sh [IP_DE_LA_ESTACION]
 docker compose restart gasnova-frontend
