@@ -8,7 +8,7 @@ import { Transaction, PaymentMethod, DispenserState, FuelType, NozzleState } fro
 import { TrendingUp, CreditCard, HelpCircle, Star, ShieldCheck, Mail, ShieldAlert, Check, Terminal, Users, UserCheck, Plus, BarChart3, Database, Clock, DollarSign, Trash2, Edit2, Palette, Eye, Settings, RefreshCw, Printer, Scissors, FileText, Receipt, ChevronDown, ChevronUp, Save, Wifi, WifiOff, Download, Server, X } from 'lucide-react';
 import { api } from '../api';
 import type { PrintStation } from '../api/types';
-import { getPrintStationId, setPrintStationId } from '../printStation';
+import { getPrintStationId, setPrintStationId, getStationLocation, setStationLocation } from '../printStation';
 
 const getPrintApiBaseUrl = () => {
   const envUrl = (import.meta as any).env.VITE_API_BASE_URL;
@@ -86,9 +86,10 @@ export default function OtherTabs({
     { id: 'FC-1102-45', holder: 'Estafeta Courier', limit: 3000, currentUsed: 3100.00, status: 'Declined' },
   ]);
 
-  // States for TPV, API, and WebSocket connection parameters in Settings view
-  const [tpvId, setTpvId] = useState('TPV-ESTACION-01');
-  const [tpvLocation, setTpvLocation] = useState('Isla Principal');
+  // States for TPV, API, and WebSocket connection parameters in Settings view.
+  // El código de TPV es la misma identidad que "esta PC es la estación" (ver
+  // printStation.ts) — una PC = un TPV = una estación de impresión.
+  const [tpvLocation, setTpvLocation] = useState(getStationLocation());
   const [apiEndpoint, setApiEndpoint] = useState('https://api.gasnova.site/v1');
   const [apiToken, setApiToken] = useState('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
   const [wsEndpoint, setWsEndpoint] = useState('wss://stream.gasnova.com/events');
@@ -1644,20 +1645,23 @@ export default function OtherTabs({
                 
                 <div className="space-y-2">
                   <div>
-                    <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">CÓDIGO TPV / TERMINAL</label>
+                    <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">CÓDIGO TPV / TERMINAL (esta PC)</label>
                     <input
                       type="text"
-                      value={tpvId}
-                      onChange={(e) => setTpvId(e.target.value)}
-                      placeholder="Ej. TPV-ESTACION-01"
+                      value={thisStationId}
+                      onChange={(e) => handleSetThisStation(e.target.value)}
+                      placeholder="Ej. POS-1"
                       className="w-full bg-white border border-neutral-300 rounded px-2.5 py-1.5 text-xs text-slate-800 font-mono font-bold focus:outline-none focus:border-[#355e9e]"
                     />
+                    <p className="text-[9px] text-slate-400 mt-1">
+                      Es la misma identidad que "Esta PC es la estación" en Estaciones de Impresión — un solo código por PC.
+                    </p>
                   </div>
                   <div>
                     <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">UBICACIÓN ASIGNADA</label>
                     <select
                       value={tpvLocation}
-                      onChange={(e) => setTpvLocation(e.target.value)}
+                      onChange={(e) => { setTpvLocation(e.target.value); setStationLocation(e.target.value); }}
                       className="w-full bg-white border border-neutral-300 rounded px-2 py-1.5 text-xs text-slate-800 font-semibold focus:outline-none"
                     >
                       <option value="Isla Principal">Isla Principal (Caja 1)</option>
