@@ -2,6 +2,16 @@
 
 Sistema de gestión de estación de servicio integrado con el controlador Technotrade PTS-2 (jsonPTS). Incluye backend FastAPI, frontend React/Vite y despliegue vía Docker.
 
+## Funcionalidades
+
+- **Consola de dispensadores en tiempo real** — estado de cada cara/manguera vía WebSocket, autorización, bloqueo y parada de emergencia.
+- **Configuración de caras y combustibles** — wizard guiado (`PumpConfigWizard`) para dar de alta una cara nueva, y botón **"Recuperar desde PTS-2"** en Ajustes que lee el mapeo real del controlador (caras, mangueras, grados de combustible) sin alterar la instalación física.
+- **Conexión al controlador PTS-2** — IP configurable desde Ajustes; al guardar, el backend reconecta el cliente PTS-2 sin reiniciar el contenedor.
+- **Cierre de turno con doble confirmación** — resumen de ventas por manguera, contadores mecánicos del PTS-2 vs. contadores del sistema (con diferencia), impresión térmica con firmas, y desbloqueo automático de todas las caras al confirmar el cierre.
+- **Persistencia de auditoría** — cada cierre de turno guarda su desglose de contadores (`counter_breakdown`) en `shift_closures` para trazabilidad histórica.
+- **Permisos por rol** — control de acceso a pantallas y acciones (`usePermissions`, `permissions.ts`) para Administrador, Supervisor y Operador.
+- **Recuperación de transacciones** — sincronización desde la tarjeta SD del PTS-2 (`sync.py`) para no perder ventas si el WebSocket estuvo caído.
+
 ## Estructura
 
 ```text
@@ -21,7 +31,7 @@ El stack completo (PostgreSQL + backend + frontend) corre en 3 contenedores. Las
 ### Requisitos en la PC destino
 
 - Docker Desktop (o Docker Engine + Compose plugin) instalado.
-- Dos archivos: `docker-compose.yml` y `backend/.env` (con la configuración del PTS-2 de esa estación).
+- Dos archivos: `docker-compose.yml` y `backend/.env` (copiar desde `backend/.env.example` y ajustar `PTS2_HOST` y los PINes de usuarios semilla para esa estación — la IP del PTS-2 también puede cambiarse luego desde **Ajustes** sin reiniciar).
 
 ### Instalación / actualización
 
