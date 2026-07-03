@@ -1,0 +1,17 @@
+# Override para desarrollo: construye las imágenes desde el código fuente local
+# en lugar de descargarlas de ghcr.io.
+#
+# Uso: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
+
+services:
+  gasnova-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: gasnova-backend:dev
+
+  gasnova-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: gasnova-frontend:dev
