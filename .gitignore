@@ -1,6 +1,7 @@
 .env
 .claude/
 certs/
+*.db
 __pycache__/
 *.pyc
 .venv/
