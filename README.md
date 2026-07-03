@@ -18,6 +18,8 @@ Sistema de gestión de estación de servicio integrado con el controlador Techno
 GasNova/
 ├── backend/                        # SDK PTS-2, FastAPI, Swagger, WebSocket, tests
 ├── frontend/                       # Aplicación web del POS/dashboard
+├── scripts/
+│   └── generate-certs.sh           # Genera el certificado HTTPS para gasnova.local
 ├── docker-compose.yml              # Producción: descarga imágenes desde ghcr.io
 ├── docker-compose.dev.yml          # Desarrollo: construye desde el código local
 └── .github/workflows/
@@ -42,7 +44,7 @@ docker compose up -d      # levanta db + backend + frontend
 
 Ese mismo comando sirve para actualizar más adelante: `docker compose pull && docker compose up -d` descarga las imágenes nuevas y reinicia los contenedores sin tocar los datos — el volumen `gasnova_data` de PostgreSQL es independiente de las imágenes y persiste entre actualizaciones.
 
-- Frontend: `http://localhost`
+- Frontend: `http://localhost` (redirige a `https://localhost` — ver sección HTTPS)
 - Backend / Swagger: `http://localhost:8002/docs`
 
 ### Acceder como `http://gasnova.local` en la red local
