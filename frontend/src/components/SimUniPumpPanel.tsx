@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Fuel, Radio, Power, CheckCircle2, RotateCcw } from 'lucide-react';
+import { Fuel, Radio, Power, CheckCircle2, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react';
 import { DispenserState, FuelType } from '../types';
 import { api } from '../api';
 
@@ -32,6 +32,14 @@ export default function SimUniPumpPanel({
   const [selectedPumpId, setSelectedPumpId] = useState<number>(1);
   const selectedDispenser = dispensers.find(d => d.id === selectedPumpId) || dispensers[0];
   const [pts2Host, setPts2Host] = useState<string>('192.168.50.117');
+
+  // Acordeón: colapsado por defecto en modo PTS-2 real (nada que interactuar),
+  // expandido en modo Simulador Web (es la herramienta de trabajo). El usuario
+  // puede expandir/colapsar manualmente con el encabezado en cualquier momento.
+  const [isExpanded, setIsExpanded] = useState<boolean>(isSimulating);
+  useEffect(() => {
+    setIsExpanded(isSimulating);
+  }, [isSimulating]);
 
   useEffect(() => {
     api.getSystemSettings()
@@ -91,11 +99,25 @@ export default function SimUniPumpPanel({
           }`}>
             {isSimulating ? 'MODO SIMULACIÓN' : 'MODO EN LÍNEA'}
           </span>
+          <button
+            onClick={() => setIsExpanded(prev => !prev)}
+            className="p-1.5 rounded bg-[#20252e] hover:bg-[#2d3442] text-slate-400 hover:text-white transition-colors cursor-pointer"
+            title={isExpanded ? 'Colapsar panel' : 'Expandir panel'}
+          >
+            {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </button>
         </div>
       </div>
 
-      {/* Body Section */}
-      {!isSimulating ? (
+      {/* Body Section — acordeón: colapsado muestra solo un resumen compacto */}
+      {!isExpanded ? (
+        <div className="bg-[#111418] px-4 py-2.5 flex items-center gap-2 text-[10px] text-slate-500 font-sans">
+          <Radio className={`w-3.5 h-3.5 ${isSimulating ? 'text-amber-400' : 'text-emerald-400'}`} />
+          {isSimulating
+            ? 'Panel colapsado — clic en la flecha para ver el simulador.'
+            : <>Conectado a <span className="font-mono text-blue-400 font-bold">{pts2Host}</span> — panel colapsado, clic en la flecha para expandir.</>}
+        </div>
+      ) : !isSimulating ? (
         /* Real Mode Disabled Message inside the outer frame */
         <div className="bg-[#111418] p-8 text-slate-400 text-xs font-mono flex flex-col items-center justify-center gap-3 h-[200px]">
           <div className="p-3 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">

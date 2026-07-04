@@ -135,8 +135,8 @@ export default function App() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [alerts, setAlerts] = useState<ShiftAlert[]>(INITIAL_SHIFTS);
 
-  // Simulation play state
-  const [isSimulating, setIsSimulating] = useState<boolean>(true);
+  // Simulation play state — arranca en modo PTS-2 real (no simulando) por defecto.
+  const [isSimulating, setIsSimulating] = useState<boolean>(false);
 
   // SimUniPump web states
   const [nozzleUpStates, setNozzleUpStates] = useState<{ [key: string]: boolean }>({});
