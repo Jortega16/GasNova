@@ -16,7 +16,18 @@ RUN npm run build
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
 FROM nginx:alpine
 
-RUN apk add --no-cache openssl
+# Certificado autofirmado de respaldo generado UNA VEZ en build time (no en
+# runtime) — evita depender de openssl/entropía/permisos del host en cada
+# arranque del contenedor, que puede fallar de forma distinta según el SO.
+RUN apk add --no-cache --virtual .certgen openssl \
+    && mkdir -p /etc/nginx/certs-fallback \
+    && openssl req -x509 -nodes -newkey rsa:2048 \
+        -keyout /etc/nginx/certs-fallback/gasnova.key \
+        -out /etc/nginx/certs-fallback/gasnova.crt \
+        -days 3650 \
+        -subj "/CN=gasnova.local" \
+        -addext "subjectAltName=DNS:gasnova.local,DNS:gasnova,DNS:localhost" \
+    && apk del .certgen
 
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
