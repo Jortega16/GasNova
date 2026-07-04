@@ -59,19 +59,29 @@ Solo funciona dentro de la misma red local (no es un dominio público) y requier
 
 ### HTTPS para `gasnova.local`
 
-El frontend sirve HTTPS en el puerto 443 (con redirect automático desde 80) usando un certificado en `./certs/`, montado como volumen en `docker-compose.yml`.
+El frontend sirve HTTPS en el puerto 443 (con redirect automático desde 80). **Totalmente automático, no hay que ejecutar nada**: la primera vez que arranca el contenedor, genera él mismo:
 
-**No requiere ningún paso previo**: si `./certs/` está vacío, el contenedor genera automáticamente un certificado autofirmado temporal al arrancar (el navegador mostrará advertencia de "no seguro" hasta reemplazarlo). Para tener un certificado de confianza sin advertencias:
+1. Una **CA (autoridad certificadora) propia** de esa instalación, persistida en `./certs/` — se crea una sola vez y se reutiliza en cada reinicio o actualización.
+2. Un **certificado para `gasnova.local`** firmado por esa CA.
+
+Con esto, `https://gasnova.local` funciona de inmediato, aunque el navegador seguirá mostrando advertencia de "no seguro" hasta que esa CA se marque como confiable.
+
+**Único paso manual restante (y es inevitable por diseño de seguridad — ninguna herramienta puede saltárselo):** decirle a cada dispositivo que confíe en esa CA. Se hace visitando, desde el navegador de ese dispositivo (PC, tablet, celular en la misma red):
+
+```
+http://<IP-o-nombre-de-esta-PC>/gasnova-ca.crt
+```
+
+y aceptando instalarlo como certificado de confianza raíz. Una vez hecho, `https://gasnova.local` deja de mostrar advertencias en ese dispositivo — sin terminal, sin scripts, un solo clic por dispositivo.
+
+`./certs/` no se versiona en git (contiene claves privadas).
+
+**Alternativa avanzada:** si prefieres usar [mkcert](https://github.com/FiloSottile/mkcert) en vez de la CA autogenerada (por ejemplo, para instalar la CA automáticamente en la máquina donde corres el script), sigue disponible:
 
 ```bash
 bash scripts/generate-certs.sh [IP_DE_LA_ESTACION]
 docker compose restart gasnova-frontend
 ```
-
-- **Con [mkcert](https://github.com/FiloSottile/mkcert) instalado** (recomendado): genera un certificado firmado por una CA local. El script imprime la ruta del `rootCA.pem` — hay que instalarlo como certificado de confianza en cada dispositivo (POS, tablets) que acceda, y después `https://gasnova.local` no mostrará advertencias.
-- **Sin mkcert:** genera un certificado autofirmado con `openssl` (funciona igual, pero el navegador mostrará advertencia de "no seguro" hasta aceptarlo manualmente).
-
-`./certs/` no se versiona en git (contiene la clave privada) — hay que generarlo una vez por estación.
 
 Para fijar una versión específica en vez de `:latest`, exporta las variables antes de `pull`/`up`:
 
