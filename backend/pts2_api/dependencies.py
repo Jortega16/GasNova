@@ -33,13 +33,20 @@ def build_pts2_client(db: Session | None = None) -> PTS2Client:
     local_db: Session = db or SessionLocal()
 
     try:
-        host_setting = local_db.query(SystemSetting).filter(
-            SystemSetting.key == "pts2_host"
-        ).first()
-        if host_setting and host_setting.value:
-            client_settings.pts2_host = host_setting.value
+        overrides = local_db.query(SystemSetting).filter(
+            SystemSetting.key.in_(["pts2_host", "pts2_auth_type", "pts2_username", "pts2_password"])
+        ).all()
+        values = {s.key: s.value for s in overrides if s.value}
+        if "pts2_host" in values:
+            client_settings.pts2_host = values["pts2_host"]
+        if "pts2_auth_type" in values:
+            client_settings.pts2_auth_type = values["pts2_auth_type"]
+        if "pts2_username" in values:
+            client_settings.pts2_username = values["pts2_username"]
+        if "pts2_password" in values:
+            client_settings.pts2_password = values["pts2_password"]
     except Exception as exc:
-        logger.error("Error loading pts2_host from database: %s", exc)
+        logger.error("Error loading pts2_* settings from database: %s", exc)
     finally:
         if own_db:
             local_db.close()

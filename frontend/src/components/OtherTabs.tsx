@@ -94,6 +94,9 @@ export default function OtherTabs({
   const [apiToken, setApiToken] = useState('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
   const [wsEndpoint, setWsEndpoint] = useState('wss://stream.gasnova.com/events');
   const [pts2Host, setPts2Host] = useState('192.168.50.117');
+  const [pts2AuthType, setPts2AuthType] = useState('basic');
+  const [pts2Username, setPts2Username] = useState('admin');
+  const [pts2Password, setPts2Password] = useState('admin');
   const [isTestingApi, setIsTestingApi] = useState(false);
   const [isTestingWs, setIsTestingWs] = useState(false);
 
@@ -233,6 +236,9 @@ export default function OtherTabs({
         if (data.station_canton !== undefined) setStationCanton(data.station_canton);
         if (data.station_department) setStationDepartment(data.station_department);
         if (data.pts2_host) setPts2Host(data.pts2_host);
+        if (data.pts2_auth_type) setPts2AuthType(data.pts2_auth_type);
+        if (data.pts2_username) setPts2Username(data.pts2_username);
+        if (data.pts2_password) setPts2Password(data.pts2_password);
         if (data.remote_api_url) setApiEndpoint(data.remote_api_url);
       })
       .catch(() => {});
@@ -363,6 +369,9 @@ export default function OtherTabs({
     setPrinterSaving(true);
     try {
       await api.updateSystemSetting('pts2_host', pts2Host);
+      await api.updateSystemSetting('pts2_auth_type', pts2AuthType);
+      await api.updateSystemSetting('pts2_username', pts2Username);
+      await api.updateSystemSetting('pts2_password', pts2Password);
       await api.updateSystemSetting('remote_api_url', apiEndpoint);
       setPrinterSaved(true);
       setTimeout(() => setPrinterSaved(false), 3000);
@@ -1762,6 +1771,44 @@ export default function OtherTabs({
                       placeholder="192.168.50.117"
                       className="w-full bg-white border border-neutral-300 rounded px-2.5 py-1.5 text-xs text-slate-800 font-mono focus:outline-none focus:border-[#355e9e]"
                     />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">TIPO DE AUTENTICACIÓN</label>
+                      <select
+                        value={pts2AuthType}
+                        onChange={(e) => setPts2AuthType(e.target.value)}
+                        className="w-full bg-white border border-neutral-300 rounded px-2 py-1.5 text-xs text-slate-800 font-semibold focus:outline-none cursor-pointer"
+                      >
+                        <option value="basic">Basic</option>
+                        <option value="digest">Digest</option>
+                        <option value="none">Ninguna</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">USUARIO</label>
+                      <input
+                        type="text"
+                        value={pts2Username}
+                        onChange={(e) => setPts2Username(e.target.value)}
+                        placeholder="admin"
+                        className="w-full bg-white border border-neutral-300 rounded px-2.5 py-1.5 text-xs text-slate-800 font-mono focus:outline-none focus:border-[#355e9e]"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">CONTRASEÑA</label>
+                    <input
+                      type="password"
+                      value={pts2Password}
+                      onChange={(e) => setPts2Password(e.target.value)}
+                      placeholder="••••••••"
+                      autoComplete="new-password"
+                      className="w-full bg-white border border-neutral-300 rounded px-2.5 py-1.5 text-xs text-slate-800 font-mono focus:outline-none focus:border-[#355e9e]"
+                    />
+                    <p className="text-[9px] text-slate-400 mt-1">
+                      Deben coincidir con lo configurado en el propio controlador PTS-2 (panel de administración del dispositivo).
+                    </p>
                   </div>
                   <div>
                     <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">ESTADO DE CANAL DE EVENTOS</label>
