@@ -83,6 +83,31 @@ class SetFuelGradesPricesRequest(BaseModel):
     fuel_grades_prices: list[FuelGradePrice] = Field(description="Precios a actualizar por grado de combustible.")
 
 
+class PriceSchedule(BaseModel):
+    id: int = Field(ge=1, le=10, serialization_alias="Id", description="ID del programa de precio (1–10, máximo 10 slots en el controlador).")
+    enabled: bool = Field(default=True, serialization_alias="Enabled", description="Si el programa está activo.")
+    fuel_grade_id: int = Field(ge=1, le=20, serialization_alias="FuelGradeId", description="ID del grado de combustible a programar.")
+    price: float = Field(gt=0, serialization_alias="Price", description="Precio a aplicar en la fecha/hora programada.")
+    date_time: str = Field(
+        serialization_alias="DateTime",
+        description="Fecha y hora en formato YYYY-MM-DDThh:mm:ss. Si se marca algún día de 'every_*', esta hora se repite ese día cada semana.",
+    )
+    every_monday: bool = Field(default=False, serialization_alias="EveryMonday")
+    every_tuesday: bool = Field(default=False, serialization_alias="EveryTuesday")
+    every_wednesday: bool = Field(default=False, serialization_alias="EveryWednesday")
+    every_thursday: bool = Field(default=False, serialization_alias="EveryThursday")
+    every_friday: bool = Field(default=False, serialization_alias="EveryFriday")
+    every_saturday: bool = Field(default=False, serialization_alias="EverySaturday")
+    every_sunday: bool = Field(default=False, serialization_alias="EverySunday")
+
+    class Config:
+        populate_by_name = True
+
+
+class SetPricesSchedulerConfigRequest(BaseModel):
+    price_schedules: list[PriceSchedule] = Field(description="Programas de precio (máximo 10 slots en el controlador PTS-2).")
+
+
 class PumpNozzleConfig(BaseModel):
     pump_id: int = Field(ge=1, le=100, serialization_alias="PumpId", description="ID de la cara/bomba.")
     fuel_grade_ids: list[int] = Field(
@@ -156,6 +181,25 @@ def get_fuel_grades_configuration(client: PTS2Client = Depends(get_pts2_client))
 def get_fuel_grades_prices(client: PTS2Client = Depends(get_pts2_client)) -> CommandResponse:
     try:
         data = client.request_data("GetFuelGradesPrices", None)
+        return CommandResponse(data=data)
+    finally:
+        _close(client)
+
+
+@router.get(
+    "/prices-scheduler",
+    response_model=CommandResponse,
+    summary="Leer programación de precios nativa del PTS-2 (GetPricesSchedulerConfiguration)",
+    description=(
+        "Retorna los programas de cambio de precio configurados directamente en el controlador PTS-2. "
+        "A diferencia del programador propio de GasNova (basado en base de datos), estos programas los "
+        "aplica el controlador por sí mismo, incluso si el backend está apagado. "
+        "Equivale al comando **GetPricesSchedulerConfiguration** del protocolo jsonPTS (cmd #60)."
+    ),
+)
+def get_prices_scheduler_configuration(client: PTS2Client = Depends(get_pts2_client)) -> CommandResponse:
+    try:
+        data = client.request_data("GetPricesSchedulerConfiguration", None)
         return CommandResponse(data=data)
     finally:
         _close(client)
@@ -274,6 +318,48 @@ def set_fuel_grades_prices(
             ]
         }
         data = client.request_data("SetFuelGradesPrices", payload)
+        return CommandResponse(data=data)
+    finally:
+        _close(client)
+
+
+@router.put(
+    "/prices-scheduler",
+    response_model=CommandResponse,
+    summary="Programar cambios de precio en el controlador PTS-2 (SetPricesSchedulerConfiguration)",
+    description=(
+        "Define hasta 10 programas de cambio de precio directamente en el controlador PTS-2 — el propio "
+        "controlador aplica el cambio en la fecha/hora indicada, incluso si el backend/Docker está apagado. "
+        "Soporta repetición semanal marcando los días de la semana (every_monday, etc.); sin ningún día "
+        "marcado, el cambio se aplica una sola vez. "
+        "Equivale al comando **SetPricesSchedulerConfiguration** del protocolo jsonPTS (cmd #61). "
+        "Requiere permiso **Configuration** en el PTS-2. "
+        "⚠️ Los slots (Id 1-10) ausentes en el array quedan deshabilitados/en cero."
+    ),
+)
+def set_prices_scheduler_configuration(
+    request: SetPricesSchedulerConfigRequest,
+    client: PTS2Client = Depends(get_pts2_client),
+) -> CommandResponse:
+    try:
+        schedules = [
+            {
+                "Id": s.id,
+                "Enabled": s.enabled,
+                "FuelGradeId": s.fuel_grade_id,
+                "Price": s.price,
+                "DateTime": s.date_time,
+                "EveryMonday": s.every_monday,
+                "EveryTuesday": s.every_tuesday,
+                "EveryWednesday": s.every_wednesday,
+                "EveryThursday": s.every_thursday,
+                "EveryFriday": s.every_friday,
+                "EverySaturday": s.every_saturday,
+                "EverySunday": s.every_sunday,
+            }
+            for s in request.price_schedules
+        ]
+        data = client.request_data("SetPricesSchedulerConfiguration", {"PriceSchedules": schedules})
         return CommandResponse(data=data)
     finally:
         _close(client)

@@ -478,6 +478,47 @@ export const api = {
     return apiFetch("configuration/nozzles");
   },
 
+  async getPricesSchedulerConfiguration(): Promise<BackendApiResponse> {
+    return apiFetch("configuration/prices-scheduler");
+  },
+
+  async setPricesSchedulerConfiguration(
+    schedules: {
+      id: number;
+      enabled: boolean;
+      fuelGradeId: number;
+      price: number;
+      dateTime: string;
+      everyMonday?: boolean;
+      everyTuesday?: boolean;
+      everyWednesday?: boolean;
+      everyThursday?: boolean;
+      everyFriday?: boolean;
+      everySaturday?: boolean;
+      everySunday?: boolean;
+    }[],
+  ): Promise<BackendApiResponse> {
+    return apiFetch("configuration/prices-scheduler", {
+      method: "PUT",
+      body: JSON.stringify({
+        price_schedules: schedules.map((s) => ({
+          id: s.id,
+          enabled: s.enabled,
+          fuel_grade_id: s.fuelGradeId,
+          price: s.price,
+          date_time: s.dateTime,
+          every_monday: s.everyMonday ?? false,
+          every_tuesday: s.everyTuesday ?? false,
+          every_wednesday: s.everyWednesday ?? false,
+          every_thursday: s.everyThursday ?? false,
+          every_friday: s.everyFriday ?? false,
+          every_saturday: s.everySaturday ?? false,
+          every_sunday: s.everySunday ?? false,
+        })),
+      }),
+    });
+  },
+
   async setupPumpConfiguration(params: {
     pump: { id: number; port: number; address: number; protocol: number; baudRate: number };
     nozzles: { fuelGradeId: number; fuelGradeName: string; price: number }[];

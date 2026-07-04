@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PriceConfig, ScheduledPrice, FuelType } from '../types';
-import { Sparkles, Edit2, Trash2, Calendar, Clock, Plus, HelpCircle, Check, ArrowRight, AlertCircle, Download, Upload } from 'lucide-react';
+import { Sparkles, Edit2, Trash2, Calendar, Clock, Plus, HelpCircle, Check, ArrowRight, AlertCircle, Download, Upload, Cpu, X } from 'lucide-react';
+import { api } from '../api';
 
 interface PriceConfigTabProps {
   prices: PriceConfig[];
@@ -54,6 +55,112 @@ export default function PriceConfigTab({
   // States for inline Edit of active price
   const [editingType, setEditingType] = useState<FuelType | null>(null);
   const [editPriceVal, setEditPriceVal] = useState<string>('');
+
+  // States for native PTS-2 hardware price scheduler (SetPricesSchedulerConfiguration)
+  interface NativeSchedule {
+    id: number;
+    enabled: boolean;
+    fuelGradeId: number;
+    price: number;
+    dateTime: string; // YYYY-MM-DDThh:mm:ss
+    everyMonday: boolean;
+    everyTuesday: boolean;
+    everyWednesday: boolean;
+    everyThursday: boolean;
+    everyFriday: boolean;
+    everySaturday: boolean;
+    everySunday: boolean;
+  }
+  const [nativeSchedules, setNativeSchedules] = useState<NativeSchedule[]>([]);
+  const [nativeLoading, setNativeLoading] = useState(false);
+  const [nativeSaving, setNativeSaving] = useState(false);
+  const [nativeMessage, setNativeMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [showNativeScheduler, setShowNativeScheduler] = useState(false);
+
+  const emptyNativeSchedule = (id: number): NativeSchedule => ({
+    id, enabled: true, fuelGradeId: 1, price: 0, dateTime: '',
+    everyMonday: false, everyTuesday: false, everyWednesday: false,
+    everyThursday: false, everyFriday: false, everySaturday: false, everySunday: false,
+  });
+
+  const loadNativeSchedules = async () => {
+    setNativeLoading(true);
+    setNativeMessage(null);
+    try {
+      const res = await api.getPricesSchedulerConfiguration();
+      const raw = (res.data as any)?.PriceSchedules ?? [];
+      const loaded: NativeSchedule[] = raw
+        .filter((s: any) => (s.FuelGradeId ?? 0) > 0)
+        .map((s: any) => ({
+          id: s.Id,
+          enabled: !!s.Enabled,
+          fuelGradeId: s.FuelGradeId,
+          price: s.Price ?? 0,
+          dateTime: s.DateTime ?? '',
+          everyMonday: !!s.EveryMonday,
+          everyTuesday: !!s.EveryTuesday,
+          everyWednesday: !!s.EveryWednesday,
+          everyThursday: !!s.EveryThursday,
+          everyFriday: !!s.EveryFriday,
+          everySaturday: !!s.EverySaturday,
+          everySunday: !!s.EverySunday,
+        }));
+      setNativeSchedules(loaded);
+      if (!res.ok) {
+        setNativeMessage({ type: 'error', text: res.error || 'No se pudo leer la programación del PTS-2.' });
+      }
+    } catch (e) {
+      setNativeMessage({ type: 'error', text: 'Error de conexión al leer la programación del PTS-2.' });
+    } finally {
+      setNativeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showNativeScheduler && nativeSchedules.length === 0) {
+      loadNativeSchedules();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showNativeScheduler]);
+
+  const handleAddNativeSchedule = () => {
+    const usedIds = new Set(nativeSchedules.map(s => s.id));
+    let nextId = 1;
+    while (usedIds.has(nextId) && nextId <= 10) nextId++;
+    if (nextId > 10) return; // máximo 10 slots soportados por el controlador
+    setNativeSchedules(prev => [...prev, emptyNativeSchedule(nextId)]);
+  };
+
+  const handleUpdateNativeSchedule = (id: number, patch: Partial<NativeSchedule>) => {
+    setNativeSchedules(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
+  };
+
+  const handleRemoveNativeSchedule = (id: number) => {
+    setNativeSchedules(prev => prev.filter(s => s.id !== id));
+  };
+
+  const handleSaveNativeSchedules = async () => {
+    setNativeSaving(true);
+    setNativeMessage(null);
+    try {
+      const res = await api.setPricesSchedulerConfiguration(nativeSchedules);
+      if (res.ok) {
+        setNativeMessage({ type: 'success', text: '✓ Programación guardada en el controlador PTS-2.' });
+      } else {
+        setNativeMessage({ type: 'error', text: res.error || 'Error al guardar en el PTS-2.' });
+      }
+    } catch (e) {
+      setNativeMessage({ type: 'error', text: 'Error de conexión al guardar en el PTS-2.' });
+    } finally {
+      setNativeSaving(false);
+    }
+  };
+
+  const fuelGradeIdLabel = (id: number): string => {
+    const byOrder = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
+    const name = byOrder[id - 1];
+    return name ? (fuelTypeTranslations[name] || name) : `Grado #${id}`;
+  };
 
   React.useEffect(() => {
     if (prices.length > 0) {
@@ -417,6 +524,145 @@ export default function PriceConfigTab({
               </tbody>
             </table>
           </div>
+        </div>
+
+        {/* Native PTS-2 hardware price scheduler */}
+        <div className="bg-white rounded-xl shadow-md border border-neutral-300 overflow-hidden mt-4" id="native-prices-scheduler">
+          <div className="p-4 border-b border-neutral-200 flex items-center justify-between flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setShowNativeScheduler(prev => !prev)}
+              className="flex items-center gap-2 cursor-pointer"
+            >
+              <Cpu className="w-4 h-4 text-[#355e9e]" />
+              <span className="font-sans font-bold text-sm text-slate-800">Programación Nativa del Controlador PTS-2</span>
+              {showNativeScheduler ? <ArrowRight className="w-3.5 h-3.5 text-slate-400 rotate-90" /> : <ArrowRight className="w-3.5 h-3.5 text-slate-400" />}
+            </button>
+            <span className="text-[10px] text-slate-400 font-sans">
+              El propio controlador aplica el cambio, aunque el backend esté apagado
+            </span>
+          </div>
+
+          {showNativeScheduler && (
+            <div className="p-4 space-y-3">
+              <p className="text-[11px] text-slate-500 font-sans leading-relaxed">
+                Hasta 10 programas guardados directamente en el hardware del PTS-2. Marca días de la semana para que se repita automáticamente; sin ningún día marcado, se aplica una sola vez en la fecha indicada.
+              </p>
+
+              {nativeMessage && (
+                <div className={`text-xs font-semibold rounded p-2 ${nativeMessage.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+                  {nativeMessage.text}
+                </div>
+              )}
+
+              {nativeLoading ? (
+                <div className="text-xs text-slate-400 text-center py-4">Cargando programación del controlador...</div>
+              ) : (
+                <div className="space-y-2">
+                  {nativeSchedules.length === 0 && (
+                    <div className="text-xs text-slate-400 italic text-center py-3 bg-slate-50 rounded-lg border">
+                      No hay programas configurados en el controlador.
+                    </div>
+                  )}
+                  {nativeSchedules.map((s) => (
+                    <div key={s.id} className="border border-neutral-200 rounded-lg p-3 bg-slate-50 space-y-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-mono font-bold text-slate-400 bg-white border rounded px-1.5 py-0.5">#{s.id}</span>
+                        <label className="flex items-center gap-1 text-[10px] font-bold text-slate-600">
+                          <input
+                            type="checkbox"
+                            checked={s.enabled}
+                            onChange={(e) => handleUpdateNativeSchedule(s.id, { enabled: e.target.checked })}
+                            className="cursor-pointer"
+                          />
+                          Activo
+                        </label>
+                        <select
+                          value={s.fuelGradeId}
+                          onChange={(e) => handleUpdateNativeSchedule(s.id, { fuelGradeId: Number(e.target.value) })}
+                          className="border border-neutral-300 rounded px-2 py-1 text-xs bg-white cursor-pointer"
+                        >
+                          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(id => (
+                            <option key={id} value={id}>{fuelGradeIdLabel(id)}</option>
+                          ))}
+                        </select>
+                        <div className="relative">
+                          <span className="absolute left-2 top-1.5 text-slate-400 text-[10px]">$</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={s.price}
+                            onChange={(e) => handleUpdateNativeSchedule(s.id, { price: Number(e.target.value) })}
+                            className="w-24 border border-neutral-300 rounded pl-5 pr-2 py-1 text-xs font-mono bg-white"
+                          />
+                        </div>
+                        <input
+                          type="datetime-local"
+                          value={s.dateTime.slice(0, 16)}
+                          onChange={(e) => handleUpdateNativeSchedule(s.id, { dateTime: e.target.value + ':00' })}
+                          className="border border-neutral-300 rounded px-2 py-1 text-xs font-mono bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveNativeSchedule(s.id)}
+                          className="p-1.5 text-red-500 hover:bg-red-100 rounded cursor-pointer ml-auto"
+                          title="Eliminar programa"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap text-[9.5px] font-bold text-slate-500">
+                        <span className="uppercase tracking-wide text-slate-400">Repetir:</span>
+                        {([
+                          ['everyMonday', 'Lun'], ['everyTuesday', 'Mar'], ['everyWednesday', 'Mié'],
+                          ['everyThursday', 'Jue'], ['everyFriday', 'Vie'], ['everySaturday', 'Sáb'], ['everySunday', 'Dom'],
+                        ] as [keyof NativeSchedule, string][]).map(([key, label]) => (
+                          <label key={key} className="flex items-center gap-1 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={s[key] as boolean}
+                              onChange={(e) => handleUpdateNativeSchedule(s.id, { [key]: e.target.checked } as Partial<NativeSchedule>)}
+                              className="cursor-pointer"
+                            />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between pt-2 border-t border-slate-200 flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleAddNativeSchedule}
+                  disabled={nativeSchedules.length >= 10}
+                  className="flex items-center gap-1.5 text-xs font-bold text-[#355e9e] hover:text-[#1b365d] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Agregar programa ({nativeSchedules.length}/10)
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={loadNativeSchedules}
+                    disabled={nativeLoading}
+                    className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold rounded cursor-pointer disabled:opacity-50"
+                  >
+                    Recargar del PTS-2
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveNativeSchedules}
+                    disabled={nativeSaving}
+                    className="px-4 py-1.5 bg-[#1b365d] hover:bg-[#2a4f8f] text-white text-xs font-bold rounded cursor-pointer disabled:opacity-60"
+                  >
+                    {nativeSaving ? 'Guardando...' : 'Guardar en PTS-2'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
       </div>
