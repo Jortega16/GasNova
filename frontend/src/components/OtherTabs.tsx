@@ -1477,12 +1477,15 @@ export default function OtherTabs({
                     <p className="text-[11px] mb-2">
                       Si necesitas usar el POS con una impresora local conectada por USB en Windows, puedes iniciar la API de forma nativa para que tenga acceso completo al Spooler de Windows.
                     </p>
+                    <div className="bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 mb-2 text-[10.5px] text-amber-800">
+                      ⚠️ <b>No necesitas esto</b> si ya corres GasNova con <code className="bg-white px-1 rounded font-mono">docker compose</code> (método recomendado). Para una PC con impresora USB que no aloja el backend principal, usa mejor el <b>agente de impresión</b> (ver sección "Estaciones de Impresión (Multi-POS)" abajo) — es más liviano y no requiere Python.
+                    </div>
                     <a
                       href={`${PRINT_API_BASE_URL}/print/download-bat`}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#1b365d] hover:bg-[#355e9e] text-white text-xs font-bold rounded transition-colors"
                       download
                     >
-                      <Download className="w-3.5 h-3.5" /> Descargar script run_backend.bat
+                      <Download className="w-3.5 h-3.5" /> Descargar script run_backend.bat (solo desarrollo)
                     </a>
                   </div>
                   

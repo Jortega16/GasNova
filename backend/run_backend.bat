@@ -1,10 +1,18 @@
 @echo off
-:: Script de arranque nativo de GasNova Backend para Windows
+:: Script de arranque nativo de GasNova Backend para Windows.
+::
+:: AVISO: este script es una alternativa de DESARROLLO para correr el
+:: backend directamente en Windows con Python, sin Docker. Si ya usas
+:: GasNova en produccion, el metodo soportado es "docker compose up -d"
+:: (ver README.md) y NO necesitas ejecutar este archivo.
 title GasNova Backend Service
 
 echo ===================================================
 echo   Iniciando GasNova Backend - Servicio Nativo Windows
+echo   (Modo desarrollo sin Docker - Docker Compose es el
+echo    metodo recomendado para produccion, ver README.md)
 echo ===================================================
+echo.
 
 :: 1. Verificar si Python está instalado
 python --version >nul 2>&1

@@ -152,8 +152,20 @@ export const api = {
     prices?: BackendPriceItem[];
     error?: string;
   }> {
-    const res = await apiFetch<BackendPriceItem[]>(`pumps/${pumpId}/prices`);
-    return { ok: res.ok, prices: res.data, error: res.error };
+    // El backend devuelve la forma jsonPTS { Pump, NozzlePrices: number[] },
+    // no un array de { Nozzle, Price } — se transforma aquí para el resto del app.
+    const res = await apiFetch<{ Pump?: number; NozzlePrices?: number[] }>(
+      `pumps/${pumpId}/prices`,
+    );
+    if (!res.ok || !res.data) {
+      return { ok: res.ok, error: res.error };
+    }
+    const nozzlePrices = res.data.NozzlePrices ?? [];
+    const prices: BackendPriceItem[] = nozzlePrices.map((price, idx) => ({
+      Nozzle: idx + 1,
+      Price: price,
+    }));
+    return { ok: true, prices };
   },
 
   async setPumpPrices(
