@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Fuel, Radio, Power, CheckCircle2, RotateCcw } from 'lucide-react';
 import { DispenserState, FuelType } from '../types';
+import { api } from '../api';
 
 interface SimUniPumpPanelProps {
   dispensers: DispenserState[];
@@ -30,6 +31,15 @@ export default function SimUniPumpPanel({
 }: SimUniPumpPanelProps) {
   const [selectedPumpId, setSelectedPumpId] = useState<number>(1);
   const selectedDispenser = dispensers.find(d => d.id === selectedPumpId) || dispensers[0];
+  const [pts2Host, setPts2Host] = useState<string>('192.168.50.117');
+
+  useEffect(() => {
+    api.getSystemSettings()
+      .then(res => {
+        if (res.ok && res.data?.pts2_host) setPts2Host(res.data.pts2_host);
+      })
+      .catch(() => { /* mantiene el valor por defecto */ });
+  }, []);
 
   return (
     <div className="bg-[#0f1216] border border-[#262a30] rounded-xl overflow-hidden shadow-2xl flex flex-col font-mono text-xs select-none">
@@ -93,7 +103,7 @@ export default function SimUniPumpPanel({
           </div>
           <p className="font-bold text-center text-slate-200 uppercase tracking-widest text-[11px]">Modo Real PTS-2 (Online)</p>
           <p className="text-center text-[10px] text-slate-500 max-w-md font-sans leading-relaxed">
-            El sistema está conectado directamente al controlador físico en la IP <span className="font-mono text-blue-400 font-bold">192.168.50.117</span>.
+            El sistema está conectado directamente al controlador físico en la IP <span className="font-mono text-blue-400 font-bold">{pts2Host}</span>.
             Para simular el levantamiento de mangueras y activación de gatillos, por favor interactúa con la pistola física o utiliza la aplicación Windows <span className="font-mono text-amber-400 font-bold">SimUniPump.exe</span>.
           </p>
         </div>
