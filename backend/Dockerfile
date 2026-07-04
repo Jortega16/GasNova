@@ -7,9 +7,10 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY pyproject.toml requirements.txt run_backend.bat ./
+COPY pyproject.toml requirements.txt run_backend.bat alembic.ini ./
 COPY pts2_sdk ./pts2_sdk
 COPY pts2_api ./pts2_api
+COPY alembic ./alembic
 COPY examples ./examples
 
 RUN pip install --no-cache-dir --upgrade pip \
@@ -17,4 +18,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 EXPOSE 8000
 
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["uvicorn", "pts2_api.main:app", "--host", "0.0.0.0", "--port", "8000"]

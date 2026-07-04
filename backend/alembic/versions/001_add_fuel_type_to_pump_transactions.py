@@ -4,11 +4,15 @@ Revision ID: 001
 Revises:
 Create Date: 2026-06-30
 
+Idempotente: puede correr sobre una DB que ya tenga esta columna (creada por
+Base.metadata.create_all con el esquema actual) sin fallar.
 """
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
+
+from pts2_api.db_migration_helpers import add_column_if_missing, create_index_if_missing
 
 revision = "001"
 down_revision = None
@@ -17,13 +21,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("pump_transactions") as batch_op:
-        batch_op.add_column(
-            sa.Column("fuel_type", sa.String(50), nullable=True, comment="Tipo de combustible: Regular Unleaded, Diesel, etc.")
-        )
-        batch_op.create_index("idx_pump_transaction_fuel_type", ["fuel_type"])
+    add_column_if_missing(
+        "pump_transactions",
+        sa.Column("fuel_type", sa.String(50), nullable=True, comment="Tipo de combustible: Regular Unleaded, Diesel, etc."),
+    )
+    create_index_if_missing("idx_pump_transaction_fuel_type", "pump_transactions", ["fuel_type"])
 
-    # Back-fill fuel_type from raw_payload or nozzle number for existing rows
+    # Back-fill fuel_type from raw_payload o número de manguera para filas existentes
     op.execute("""
         UPDATE pump_transactions
         SET fuel_type = CASE
