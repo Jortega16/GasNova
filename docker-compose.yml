@@ -52,6 +52,26 @@ services:
     depends_on:
       - gasnova-backend
 
+  # ── pgAdmin: administración web de la base de datos (opcional) ──────────────
+  # Acceso en http://localhost:5050 — al conectar un servidor nuevo dentro de
+  # pgAdmin, usar host "gasnova-db", puerto 5432, usuario/clave de arriba.
+  # Para desactivar, comentar este servicio o hacer:
+  #   docker compose up -d --scale gasnova-pgadmin=0
+  gasnova-pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: gasnova-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@gasnova.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-gasnova_admin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    volumes:
+      - gasnova_pgadmin:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    depends_on:
+      - gasnova-db
+
   # ── mDNS: publica gasnova.local en la red local (solo hosts Linux) ─────────
   # En Windows/macOS no es necesario: basta con renombrar la PC como "gasnova"
   # (ambos sistemas resuelven <hostname>.local automáticamente vía mDNS).
@@ -69,3 +89,5 @@ services:
 volumes:
   gasnova_data:
     name: gasnova_data
+  gasnova_pgadmin:
+    name: gasnova_pgadmin

@@ -83,6 +83,22 @@ bash scripts/generate-certs.sh [IP_DE_LA_ESTACION]
 docker compose restart gasnova-frontend
 ```
 
+### Administrar la base de datos (pgAdmin)
+
+El `docker-compose.yml` incluye [pgAdmin](https://www.pgadmin.org/) para explorar/editar la base de datos PostgreSQL desde el navegador — útil para depurar datos sin entrar por `psql`.
+
+```
+http://localhost:5050
+```
+
+Login por defecto: `admin@gasnova.com` / `gasnova_admin` (cambiar con las variables de entorno `PGADMIN_EMAIL` / `PGADMIN_PASSWORD` antes de `docker compose up`). Al conectar un servidor nuevo dentro de pgAdmin:
+
+- **Host:** `gasnova-db`
+- **Puerto:** `5432`
+- **Usuario/clave:** los mismos de `gasnova-db` en `docker-compose.yml` (`gasnova` / `gasnova_secret` por defecto)
+
+Para desactivarlo, comentar el servicio `gasnova-pgadmin` en `docker-compose.yml`.
+
 Para fijar una versión específica en vez de `:latest`, exporta las variables antes de `pull`/`up`:
 
 ```bash
