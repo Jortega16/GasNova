@@ -36,14 +36,35 @@ El stack completo (PostgreSQL + backend + frontend) corre en 3 contenedores. Las
 - Docker Desktop (o Docker Engine + Compose plugin) instalado.
 - Dos archivos: `docker-compose.yml` y `backend/.env` (copiar desde `backend/.env.example` y ajustar `PTS2_HOST` y los PINes de usuarios semilla para esa estación — la IP del PTS-2 también puede cambiarse luego desde **Ajustes** sin reiniciar).
 
-### Instalación / actualización
+### Instalación / actualización — un solo script
+
+La forma más simple: descarga `installer/install.sh` (macOS/Linux) o `installer/install.bat` (Windows) y ejecútalo. El mismo script sirve tanto para instalar la primera vez como para actualizar más adelante — descarga el `docker-compose.yml` más reciente, crea `backend/.env` desde la plantilla si no existe (sin sobrescribir uno ya configurado), y hace `docker compose pull && docker compose up -d`.
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/Jortega16/GasNova/main/installer/install.sh -o install.sh
+bash install.sh
+```
+
+```bat
+:: Windows — descargar installer/install.bat desde GitHub y hacer doble clic,
+:: o desde cmd:
+curl -fsSL https://raw.githubusercontent.com/Jortega16/GasNova/main/installer/install.bat -o install.bat
+install.bat
+```
+
+Para actualizar más adelante, vuelve a correr el mismo script (`bash install.sh` o doble clic en `install.bat`) — los datos en PostgreSQL persisten (volumen `gasnova_data`, independiente de las imágenes).
+
+### Instalación / actualización manual
+
+Si prefieres no usar el script, el flujo es el mismo en dos comandos, teniendo ya `docker-compose.yml` y `backend/.env` en la carpeta:
 
 ```bash
 docker compose pull       # descarga la última versión de las imágenes
 docker compose up -d      # levanta db + backend + frontend
 ```
 
-Ese mismo comando sirve para actualizar más adelante: `docker compose pull && docker compose up -d` descarga las imágenes nuevas y reinicia los contenedores sin tocar los datos — el volumen `gasnova_data` de PostgreSQL es independiente de las imágenes y persiste entre actualizaciones.
+Ese mismo comando sirve para actualizar más adelante.
 
 - Frontend: `http://localhost` (redirige a `https://localhost` — ver sección HTTPS)
 - Backend / Swagger: `http://localhost:8002/docs`
