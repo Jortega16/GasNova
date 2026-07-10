@@ -11,6 +11,7 @@ export interface SystemSettings {
   stationCity: string;
   stationCanton: string;
   stationDepartment: string;
+  autoAuthorizeOnNozzleUp: boolean;
 }
 
 interface UseSystemSettingsReturn {
@@ -29,6 +30,7 @@ const DEFAULTS: SystemSettings = {
   stationCity: 'Ciudad de Guatemala',
   stationCanton: '',
   stationDepartment: 'Guatemala',
+  autoAuthorizeOnNozzleUp: false,
 };
 
 const PRICE_KEY_MAP: Record<FuelType, string> = {
@@ -55,6 +57,7 @@ export function useSystemSettings(): UseSystemSettingsReturn {
         stationCity: data.station_city ?? DEFAULTS.stationCity,
         stationCanton: data.station_canton ?? DEFAULTS.stationCanton,
         stationDepartment: data.station_department ?? DEFAULTS.stationDepartment,
+        autoAuthorizeOnNozzleUp: data.auto_authorize_on_nozzle_up === 'true',
       });
 
       setPrices(prev => prev.map(p => {

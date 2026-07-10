@@ -97,6 +97,8 @@ export default function OtherTabs({
   const [pts2AuthType, setPts2AuthType] = useState('basic');
   const [pts2Username, setPts2Username] = useState('admin');
   const [pts2Password, setPts2Password] = useState('admin');
+  const [autoAuthorizeOnNozzleUp, setAutoAuthorizeOnNozzleUp] = useState(false);
+  const [autoAuthorizeSaving, setAutoAuthorizeSaving] = useState(false);
   const [isTestingApi, setIsTestingApi] = useState(false);
   const [isTestingWs, setIsTestingWs] = useState(false);
 
@@ -240,6 +242,7 @@ export default function OtherTabs({
         if (data.pts2_username) setPts2Username(data.pts2_username);
         if (data.pts2_password) setPts2Password(data.pts2_password);
         if (data.remote_api_url) setApiEndpoint(data.remote_api_url);
+        setAutoAuthorizeOnNozzleUp(data.auto_authorize_on_nozzle_up === 'true');
       })
       .catch(() => {});
 
@@ -1066,6 +1069,39 @@ export default function OtherTabs({
                   <span className="text-slate-800 font-bold font-sans">Soporta Modos de Visualización Estética</span>
                 </div>
               </div>
+            </div>
+
+            {/* Auto-autorizar al levantar manguera */}
+            <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-start gap-3">
+                <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="text-amber-800 font-bold block text-xs">Auto-autorizar al levantar manguera</span>
+                  <span className="text-[10.5px] text-amber-700 leading-relaxed">
+                    Si se activa, el cliente puede despachar de inmediato al descolgar la pistola, sin que el operador autorice manualmente cada vez (sin límite de monto/volumen). Úsalo solo en estaciones de autoservicio supervisado.
+                  </span>
+                </div>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer shrink-0">
+                <span className="text-[10px] font-bold text-amber-800 uppercase">{autoAuthorizeOnNozzleUp ? 'Activado' : 'Desactivado'}</span>
+                <input
+                  type="checkbox"
+                  checked={autoAuthorizeOnNozzleUp}
+                  disabled={autoAuthorizeSaving}
+                  onChange={async (e) => {
+                    const next = e.target.checked;
+                    setAutoAuthorizeOnNozzleUp(next);
+                    setAutoAuthorizeSaving(true);
+                    try {
+                      await api.updateSystemSetting('auto_authorize_on_nozzle_up', next ? 'true' : 'false');
+                      if (onSettingsChange) onSettingsChange();
+                    } finally {
+                      setAutoAuthorizeSaving(false);
+                    }
+                  }}
+                  className="w-4 h-4 rounded text-amber-600 outline-none cursor-pointer disabled:opacity-50"
+                />
+              </label>
             </div>
           </div>
 

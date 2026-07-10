@@ -166,22 +166,33 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
             trx_id = str(transaction or f"{pump_id_val}-{data.get('DateTimeEnd') or data.get('DateTime') or datetime.now(timezone.utc).isoformat()}")
             # Recupera el shift capturado en el momento de la autorización (gap #4).
             auth_shift_id = _consume_auth_shift(websocket, pump_id_val)
-            upsert_pending_transaction(
-                db,
-                pump_id=pump_id_val,
-                nozzle=data.get("Nozzle"),
-                volume=data.get("Volume"),
-                amount=data.get("Amount"),
-                fuel_type=data.get("FuelGradeName") or data.get("Product") or data.get("ProductName"),
-                trx_id=trx_id,
-                pts_transaction_id=str(transaction) if transaction is not None else trx_id,
-                raw_payload=data,
-                started_at=data.get("DateTimeStart") or data.get("DateTime"),
-                completed_at=data.get("DateTimeEnd") or data.get("DateTime"),
-                station_code=str(data.get("Station") or data.get("StationCode") or "") or None,
-                pos_terminal_code=str(data.get("Terminal") or data.get("PosTerminalCode") or "") or None,
-                shift_id=auth_shift_id,
-            )
+
+            # No hubo despacho real (manguera levantada y colgada sin surtir
+            # combustible): no crear una "venta" fantasma de $0.00 / 0 litros.
+            upload_volume = data.get("Volume") or 0
+            upload_amount = data.get("Amount") or 0
+            if upload_volume <= 0 and upload_amount <= 0:
+                logger.info(
+                    "UploadPumpTransaction sin despacho real (volume=0, amount=0) — ignorado. pump=%s",
+                    pump_id_val,
+                )
+            else:
+                upsert_pending_transaction(
+                    db,
+                    pump_id=pump_id_val,
+                    nozzle=data.get("Nozzle"),
+                    volume=data.get("Volume"),
+                    amount=data.get("Amount"),
+                    fuel_type=data.get("FuelGradeName") or data.get("Product") or data.get("ProductName"),
+                    trx_id=trx_id,
+                    pts_transaction_id=str(transaction) if transaction is not None else trx_id,
+                    raw_payload=data,
+                    started_at=data.get("DateTimeStart") or data.get("DateTime"),
+                    completed_at=data.get("DateTimeEnd") or data.get("DateTime"),
+                    station_code=str(data.get("Station") or data.get("StationCode") or "") or None,
+                    pos_terminal_code=str(data.get("Terminal") or data.get("PosTerminalCode") or "") or None,
+                    shift_id=auth_shift_id,
+                )
         except Exception as exc:
             logger.error("Error saving PendingTransaction: %s", exc)
             db.rollback()

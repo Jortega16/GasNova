@@ -774,6 +774,21 @@ def capture_pending_transaction_from_pts(
         or data.get("LastTransaction")
         or f"{pump_id}-{data.get('DateTime') or data.get('LastDateTime') or 'pending'}"
     )
+
+    # No hubo despacho real (manguera levantada y colgada sin surtir combustible):
+    # no crear una "venta" fantasma de $0.00 / 0 litros en pending_transactions.
+    captured_volume = data.get("Volume") or data.get("LastVolume") or 0
+    captured_amount = data.get("Amount") or data.get("LastAmount") or 0
+    if captured_volume <= 0 and captured_amount <= 0:
+        return CommandResponse(data={
+            "created": False,
+            "skipped": True,
+            "message": "Sin despacho real (volumen y monto en cero) — no se registró como venta.",
+            "trx_id": trx_id,
+            "volume": 0.0,
+            "amount": 0.0,
+        })
+
     # Recupera el shift capturado en el momento de la autorización (gap #4).
     auth_shifts: dict = getattr(req.app.state, "pump_auth_shifts", {})
     auth_shift_id: str | None = auth_shifts.pop(pump_id, None)

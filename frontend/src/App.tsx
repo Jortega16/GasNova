@@ -10,7 +10,7 @@ import CaraCard from './components/CaraCard';
 import RecentTransactions from './components/RecentTransactions';
 import { DispenserState, TankState, PriceConfig, ScheduledPrice, Transaction, ShiftAlert, ShiftDetails, FuelType, NozzleState, PaymentMethod, UserProfile, NozzleTransaction, PumpStatus } from './types';
 import { INITIAL_DISPENSERS, INITIAL_TANKS, INITIAL_PRICES, INITIAL_SCHEDULED_PRICES, INITIAL_SHIFTS, INITIAL_USERS } from './data';
-import { AlertOctagon, Fuel, Printer, Lock, Unlock, RefreshCw, Settings } from 'lucide-react';
+import { AlertOctagon, Fuel, Printer, Lock, Unlock, RefreshCw, Settings, Power } from 'lucide-react';
 import LoginScreen from './components/LoginScreen';
 import { api, printReceiptWindow } from './api';
 import SimUniPumpPanel from './components/SimUniPumpPanel';
@@ -150,6 +150,7 @@ export default function App() {
   const [consolidationSeconds, setConsolidationSeconds] = useState<number>(300);
   const [selectedNozzleForTrx, setSelectedNozzleForTrx] = useState<{ dispenserId: number; fuelType: FuelType } | null>(null);
   const completingNozzlesRef = useRef<Set<string>>(new Set());
+  const autoAuthorizingRef = useRef<Set<number>>(new Set()); // pump ids con auto-autorización en curso
 
   // Shift metadata state
   const [shiftDetails, setShiftDetails] = useState<ShiftDetails>(() => {
@@ -189,6 +190,14 @@ export default function App() {
   } = useSystemSettings();
 
   const { can } = usePermissions(currentUser);
+
+  // Ref con el valor más reciente del toggle, para que el intervalo de polling
+  // (definido una sola vez por [dispensers.length, isSimulating]) siempre lea
+  // el estado actual sin necesidad de reiniciar el intervalo en cada cambio.
+  const autoAuthorizeEnabledRef = useRef<boolean>(systemSettings.autoAuthorizeOnNozzleUp);
+  useEffect(() => {
+    autoAuthorizeEnabledRef.current = systemSettings.autoAuthorizeOnNozzleUp;
+  }, [systemSettings.autoAuthorizeOnNozzleUp]);
 
   const unitMeasure = systemSettings.unitMeasure;
   const currencySymbol = systemSettings.currencySymbol;
@@ -274,6 +283,34 @@ export default function App() {
         if (!pumpData) return dispenser;
 
         const pts2Status = mapPts2Status(pumpData.status_type);
+
+        // ── Auto-autorizar al levantar manguera ─────────────────────────────
+        // Si está activado en Ajustes: cuando el PTS-2 reporta una manguera
+        // levantada (NozzleUp > 0) mientras la bomba sigue Idle (sin autorizar
+        // todavía) y la cara no está bloqueada, se envía PumpAuthorize sola,
+        // sin límite de monto/volumen, para que el cliente pueda despachar de
+        // inmediato sin que el operador tenga que autorizar manualmente.
+        const liftedNozzleNumber = (pumpData as any).nozzle || (pumpData as any).Nozzle || 0;
+        if (
+          autoAuthorizeEnabledRef.current &&
+          pts2Status === 'Idle' &&
+          !dispenser.isBlocked &&
+          liftedNozzleNumber > 0 &&
+          !autoAuthorizingRef.current.has(dispenser.id)
+        ) {
+          const liftedNozzle = dispenser.nozzles[liftedNozzleNumber - 1];
+          if (liftedNozzle && liftedNozzle.status === 'Idle') {
+            autoAuthorizingRef.current.add(dispenser.id);
+            const pumpIdToAuth = dispenser.id;
+            setTimeout(async () => {
+              try {
+                await api.authorizePump(pumpIdToAuth, liftedNozzleNumber, undefined, undefined, shiftDetails.shiftId);
+              } finally {
+                setTimeout(() => autoAuthorizingRef.current.delete(pumpIdToAuth), 3000);
+              }
+            }, 10);
+          }
+        }
 
         return {
           ...dispenser,
@@ -958,6 +995,86 @@ export default function App() {
       isCustomNote: true
     };
     setAlerts(prev => [stopAlert, ...prev]);
+  };
+
+  // Parada de emergencia GENERAL — detiene TODAS las caras/mangueras de una vez.
+  // Usa el comando nativo PumpEmergencyStop con Pump=0 (una sola llamada al PTS-2
+  // en vez de una por bomba), y localmente resetea cada manguera a Idle,
+  // preservando lo ya despachado como pendiente por cobrar.
+  const handleEmergencyStopAllClick = () => {
+    const tankDeductions: Record<string, number> = {};
+
+    setDispensers(prev => prev.map(d => ({
+      ...d,
+      nozzles: d.nozzles.map(n => {
+        if (n.status === 'Dispensing') {
+          const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const stopTrxId = `TRX-S${Math.floor(100 + Math.random() * 900)}`;
+          const pendingTrx: NozzleTransaction = {
+            id: stopTrxId,
+            dateTime: `Hoy ${timeStr}`,
+            dispenserId: d.id,
+            volume: n.currentVolume,
+            amount: n.currentAmount,
+            fuelType: n.fuelType,
+            status: 'Pending',
+            billingType: 'Ticket',
+            createdAt: Date.now(),
+          };
+          if (n.currentVolume > 0) {
+            tankDeductions[n.fuelType] = (tankDeductions[n.fuelType] || 0) + n.currentVolume;
+          }
+          return {
+            ...n,
+            status: 'Idle' as PumpStatus,
+            currentAmount: 0,
+            currentVolume: 0,
+            progressPercent: 0,
+            isPostpaid: false,
+            limitAmount: undefined,
+            pendingTransactions: [...(n.pendingTransactions || []), pendingTrx],
+          };
+        }
+        return {
+          ...n,
+          status: 'Idle' as PumpStatus,
+          currentAmount: 0,
+          currentVolume: 0,
+          progressPercent: 0,
+          isPostpaid: false,
+          limitAmount: undefined,
+        };
+      }),
+    })));
+
+    // Un solo comando nativo al PTS-2 (Pump=0 = todas las bombas)
+    api.emergencyStopAll();
+
+    if (Object.keys(tankDeductions).length > 0) {
+      setTanks(prevTanks => prevTanks.map(tank => {
+        const deducted = tankDeductions[tank.fuelType];
+        if (!deducted) return tank;
+        const nextLvl = Math.max(0, tank.currentLevel - deducted);
+        return {
+          ...tank,
+          currentLevel: parseFloat(nextLvl.toFixed(1)),
+          status: nextLvl < 3500 ? 'Low Level Alert' : 'OK',
+        };
+      }));
+    }
+
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const stopAllAlert: ShiftAlert = {
+      id: `AL-EMG-ALL-${Math.random()}`,
+      dateTime: `Hoy ${timeStr}`,
+      pumpName: 'TODAS LAS CARAS',
+      volume: '—',
+      amount: '—',
+      paymentType: 'S.O.S',
+      message: '🛑 PARADA DE EMERGENCIA GENERAL — todas las caras detenidas. Despachos en curso movidos a pendientes por cobrar.',
+      isCustomNote: true,
+    };
+    setAlerts(prev => [stopAllAlert, ...prev]);
   };
 
   // Stop dispenser logically (PumpStop)
@@ -2495,6 +2612,13 @@ export default function App() {
     trxId?: string,
     dateTimeStr?: string
   ) => {
+    // No hubo despacho real (manguera levantada y colgada sin surtir combustible):
+    // no crear una "venta" fantasma de $0.00 / 0 litros.
+    if (volume <= 0 && amount <= 0) {
+      console.log(`[completeFuelingJob] Ignorado: sin despacho real (volume=0, amount=0) — pump=${dispenserId}, fuel=${fuelType}`);
+      return;
+    }
+
     const completionKey = `${dispenserId}:${fuelType}`;
     if (!trxId && completingNozzlesRef.current.has(completionKey)) {
       return;
@@ -2628,6 +2752,20 @@ export default function App() {
                     >
                       <Settings className="w-3.5 h-3.5 text-emerald-400" />
                       <span>Nueva Cara</span>
+                    </button>
+                  )}
+                  {can('pump.emergency_stop') && (
+                    <button
+                      onClick={() => {
+                        if (window.confirm('¿Confirmas la PARADA DE EMERGENCIA GENERAL? Esto detiene TODAS las caras de inmediato.')) {
+                          handleEmergencyStopAllClick();
+                        }
+                      }}
+                      className="bg-gradient-to-b from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 text-white font-sans font-bold text-[11px] py-2 px-3.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-lg transition-all animate-pulse hover:animate-none"
+                      title="Detiene TODAS las caras de inmediato (PumpEmergencyStop, Pump=0)"
+                    >
+                      <Power className="w-3.5 h-3.5" />
+                      <span>Parada de Emergencia General</span>
                     </button>
                   )}
                   {can('shift.close') && (

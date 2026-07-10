@@ -30,7 +30,8 @@ DEFAULT_SETTINGS = {
     "pts2_auth_type": "basic",
     "pts2_username": "admin",
     "pts2_password": "admin",
-    "remote_api_url": "https://api.gasnova.site/v1"
+    "remote_api_url": "https://api.gasnova.site/v1",
+    "auto_authorize_on_nozzle_up": "false",
 }
 
 # Cambiar cualquiera de estas claves reconecta el cliente PTS-2 de inmediato,
