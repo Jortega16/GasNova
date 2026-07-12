@@ -1071,37 +1071,89 @@ export default function OtherTabs({
               </div>
             </div>
 
-            {/* Auto-autorizar al levantar manguera */}
-            <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap">
-              <div className="flex items-start gap-3">
-                <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                <div>
-                  <span className="text-amber-800 font-bold block text-xs">Auto-autorizar al levantar manguera</span>
-                  <span className="text-[10.5px] text-amber-700 leading-relaxed">
-                    Si se activa, el cliente puede despachar de inmediato al descolgar la pistola, sin que el operador autorice manualmente cada vez (sin límite de monto/volumen). Úsalo solo en estaciones de autoservicio supervisado.
-                  </span>
-                </div>
+            {/* Modo de Operación: forma en que se autoriza el despacho */}
+            <div className="mt-4 bg-white border border-neutral-200 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-1">
+                <ShieldAlert className="w-4 h-4 text-[#355e9e]" />
+                <span className="font-sans font-bold text-sm text-slate-800">Modo de Operación — Forma de Despacho</span>
               </div>
-              <label className="flex items-center gap-2 cursor-pointer shrink-0">
-                <span className="text-[10px] font-bold text-amber-800 uppercase">{autoAuthorizeOnNozzleUp ? 'Activado' : 'Desactivado'}</span>
-                <input
-                  type="checkbox"
-                  checked={autoAuthorizeOnNozzleUp}
+              <p className="text-[11px] text-slate-500 mb-3">
+                Define cómo se autoriza cada cara para despachar combustible.
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {/* Opción: Prepago (manual) */}
+                <button
+                  type="button"
                   disabled={autoAuthorizeSaving}
-                  onChange={async (e) => {
-                    const next = e.target.checked;
-                    setAutoAuthorizeOnNozzleUp(next);
+                  onClick={async () => {
+                    if (!autoAuthorizeOnNozzleUp) return;
+                    setAutoAuthorizeOnNozzleUp(false);
                     setAutoAuthorizeSaving(true);
                     try {
-                      await api.updateSystemSetting('auto_authorize_on_nozzle_up', next ? 'true' : 'false');
+                      await api.updateSystemSetting('auto_authorize_on_nozzle_up', 'false');
                       if (onSettingsChange) onSettingsChange();
                     } finally {
                       setAutoAuthorizeSaving(false);
                     }
                   }}
-                  className="w-4 h-4 rounded text-amber-600 outline-none cursor-pointer disabled:opacity-50"
-                />
-              </label>
+                  className={`text-left rounded-lg p-3 border-2 transition-all cursor-pointer disabled:opacity-50 ${
+                    !autoAuthorizeOnNozzleUp
+                      ? 'border-emerald-500 bg-emerald-50'
+                      : 'border-neutral-200 bg-slate-50 hover:border-neutral-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`font-bold text-xs ${!autoAuthorizeOnNozzleUp ? 'text-emerald-800' : 'text-slate-600'}`}>
+                      💳 Prepago (yo autorizo)
+                    </span>
+                    {!autoAuthorizeOnNozzleUp && (
+                      <span className="text-[9px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded uppercase">Actual</span>
+                    )}
+                  </div>
+                  <p className="text-[10.5px] text-slate-500 leading-relaxed">
+                    El operador cobra primero y autoriza la cara manualmente antes de que el cliente despache. Funcionamiento actual — más control, requiere intervención en cada venta.
+                  </p>
+                </button>
+
+                {/* Opción: Autoservicio (auto-autorizar) */}
+                <button
+                  type="button"
+                  disabled={autoAuthorizeSaving}
+                  onClick={async () => {
+                    if (autoAuthorizeOnNozzleUp) return;
+                    setAutoAuthorizeOnNozzleUp(true);
+                    setAutoAuthorizeSaving(true);
+                    try {
+                      await api.updateSystemSetting('auto_authorize_on_nozzle_up', 'true');
+                      if (onSettingsChange) onSettingsChange();
+                    } finally {
+                      setAutoAuthorizeSaving(false);
+                    }
+                  }}
+                  className={`text-left rounded-lg p-3 border-2 transition-all cursor-pointer disabled:opacity-50 ${
+                    autoAuthorizeOnNozzleUp
+                      ? 'border-amber-500 bg-amber-50'
+                      : 'border-neutral-200 bg-slate-50 hover:border-neutral-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`font-bold text-xs ${autoAuthorizeOnNozzleUp ? 'text-amber-800' : 'text-slate-600'}`}>
+                      ⛽ Autoservicio (autoriza solo)
+                    </span>
+                    {autoAuthorizeOnNozzleUp && (
+                      <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded uppercase">Actual</span>
+                    )}
+                  </div>
+                  <p className="text-[10.5px] text-slate-500 leading-relaxed">
+                    Al descolgar la pistola, la cara se autoriza automáticamente sin límite de monto/volumen — el cliente despacha sin esperar al operador. Úsalo solo en estaciones de autoservicio supervisado.
+                  </p>
+                </button>
+              </div>
+
+              {autoAuthorizeSaving && (
+                <p className="text-[10px] text-slate-400 mt-2 text-center">Guardando modo de operación...</p>
+              )}
             </div>
           </div>
 
