@@ -35,14 +35,26 @@ def override_get_db():
 def client_fixture():
     # Create the tables in the test database
     Base.metadata.create_all(bind=engine)
-    
+
+    # Seed baseline data directly into the TEST engine. El lifespan de la app
+    # no toca la BD en modo test (GASNOVA_TESTING=1), así que los seeds deben
+    # aplicarse aquí, sobre el mismo engine que sirve dependency_overrides.
+    from pts2_api.routers.users import seed_initial_users_if_empty
+    from pts2_api.routers.shifts import seed_initial_shift_if_empty
+    session = TestingSessionLocal()
+    try:
+        seed_initial_users_if_empty(session)
+        seed_initial_shift_if_empty(session)
+    finally:
+        session.close()
+
     app = create_app()
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_pts2_client] = lambda: FakeClient()
-    
+
     with TestClient(app) as test_client:
         yield test_client
-        
+
     # Drop the tables after testing
     Base.metadata.drop_all(bind=engine)
 
@@ -318,7 +330,10 @@ def test_shifts_close_and_open(client):
     assert response.json()["ok"] is True
     assert response.json()["data"]["closed_shift"]["shift_id"] == "SH-20240527-01"
     assert response.json()["data"]["closed_shift"]["status"] == "Closed"
-    assert response.json()["data"]["new_shift"]["shift_id"] == "SH-20240527-02"
+    # El nuevo turno usa la fecha de HOY y reinicia el consecutivo al cambiar de día
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y%m%d")
+    assert response.json()["data"]["new_shift"]["shift_id"] == f"SH-{today}-01"
     assert response.json()["data"]["new_shift"]["status"] == "Active"
     
     # 2. Get shifts history
@@ -428,10 +443,12 @@ def test_scheduled_prices_crud_and_cancel(client):
     assert response.status_code == 400
 
 
-def test_scheduled_price_worker_applies_prices(client):
-    from pts2_api.main import apply_scheduled_prices_cycle
+def test_scheduled_price_worker_applies_prices(client, monkeypatch):
+    from pts2_api import worker
     from pts2_api.models import DbScheduledPrice
-    import asyncio
+
+    fake = FakeClient()
+    monkeypatch.setattr(worker, "build_pts2_client", lambda db=None: fake)
 
     db = TestingSessionLocal()
     try:
@@ -447,19 +464,55 @@ def test_scheduled_price_worker_applies_prices(client):
     finally:
         db.close()
 
-    # Run cycle manually
+    # Run cycle manually (synchronous function)
     db_test = TestingSessionLocal()
     try:
-        asyncio.run(apply_scheduled_prices_cycle(db_test))
+        worker.apply_scheduled_prices_cycle(db_test)
     finally:
         db_test.close()
 
-    # Verify status changed to Applied
+    # Verify the price reached the (fake) PTS-2 and status changed to Applied
+    assert any(call[0] == "set_prices" for call in fake.pumps.calls)
     db_verify = TestingSessionLocal()
     try:
         sched = db_verify.query(DbScheduledPrice).filter(DbScheduledPrice.id == "SP-999").first()
         assert sched is not None
         assert sched.status == "Applied"
+    finally:
+        db_verify.close()
+
+
+def test_scheduled_price_worker_retries_when_pts2_unreachable(client, monkeypatch):
+    """Si el PTS-2 está inalcanzable, el programa queda Pending para reintento."""
+    from pts2_api import worker
+    from pts2_api.models import DbScheduledPrice
+
+    def _broken_client(db=None):
+        raise ConnectionError("PTS-2 offline")
+
+    monkeypatch.setattr(worker, "build_pts2_client", _broken_client)
+
+    db = TestingSessionLocal()
+    try:
+        db.add(DbScheduledPrice(
+            id="SP-998", date_time="2020-01-01 12:00",
+            fuel_type="Diesel", new_price=5.10, status="Pending",
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    db_test = TestingSessionLocal()
+    try:
+        worker.apply_scheduled_prices_cycle(db_test)
+    finally:
+        db_test.close()
+
+    db_verify = TestingSessionLocal()
+    try:
+        sched = db_verify.query(DbScheduledPrice).filter(DbScheduledPrice.id == "SP-998").first()
+        assert sched is not None
+        assert sched.status == "Pending"
     finally:
         db_verify.close()
 

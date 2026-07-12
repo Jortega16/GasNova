@@ -12,6 +12,7 @@ Sistema de gestión de estación de servicio integrado con el controlador Techno
 - **Permisos por rol** — control de acceso a pantallas y acciones (`usePermissions`, `permissions.ts`) para Administrador, Supervisor y Operador.
 - **Recuperación de transacciones** — sincronización desde la tarjeta SD del PTS-2 (`sync.py`) para no perder ventas si el WebSocket estuvo caído.
 - **Impresión multi-POS** — soporta varias PCs accediendo a la misma estación, cada una con su propia impresora (USB, red o vía agente remoto). Ver [Impresión en múltiples POS](#impresión-en-múltiples-pos).
+- **Autenticación por PIN** — la API completa requiere sesión iniciada. Ver [Autenticación](#autenticación).
 
 ## Estructura
 
@@ -171,6 +172,16 @@ Esto instala sus dependencias en un venv local y deja el agente escuchando en el
 Cada navegador guarda localmente (vía `localStorage`) a qué estación pertenece, en el selector **"Esta PC es la estación"** dentro del mismo panel. Así, cuando esa PC imprime un ticket o un cierre de turno, el backend sabe a cuál impresora enviarlo.
 
 Si no se configura ninguna estación, el sistema usa la impresora local única del servidor (comportamiento original, válido para instalaciones de un solo POS).
+
+## Autenticación
+
+Toda la API requiere una sesión iniciada con PIN — sin token, el backend responde `401` (excepto una lista mínima: `/health`, la lista de perfiles para la pantalla de login, `/users/login` y la documentación Swagger). El WebSocket del PTS-2 (`/ptsWebSocket`) no se ve afectado: el controlador físico sigue conectándose sin cambios.
+
+**Flujo:** al abrir el POS aparece la pantalla de login → el operador elige su perfil y digita su PIN de 4 dígitos → el backend emite un token de sesión firmado (válido 24 horas) que el frontend adjunta automáticamente a cada llamada. La sesión sobrevive recargas de página y reinicios del contenedor (el secreto de firma se persiste en la base de datos). Al expirar o invalidarse el token, el POS vuelve solo a la pantalla de login.
+
+- **PINs iniciales**: se siembran desde las variables `SEED_ADMIN_PIN`, `SEED_MANAGER_PIN`, `SEED_SUPERVISOR_PIN` y `SEED_OPERATOR_PIN` de `backend/.env` (defaults `1234/0000/5555/1111` — **cambiarlos antes de producción**). Después del primer arranque, los PINs se gestionan desde **Usuarios / Roles**.
+- **Cambio rápido de operador**: el selector de usuario del encabezado pide el PIN del operador entrante y rota el token de sesión — cada acción queda registrada bajo quien la hizo.
+- **Escape de emergencia**: `GASNOVA_DISABLE_AUTH=1` como variable de entorno del backend desactiva el middleware por completo (útil para depuración; no usar en producción).
 
 ## Backend
 

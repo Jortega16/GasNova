@@ -9,6 +9,16 @@ import { TrendingUp, CreditCard, HelpCircle, Star, ShieldCheck, Mail, ShieldAler
 import { api } from '../api';
 import type { PrintStation } from '../api/types';
 import { getPrintStationId, setPrintStationId, getStationLocation, setStationLocation } from '../printStation';
+import { getAuthToken } from '../auth';
+
+// Headers para los fetch directos al API de impresión (no pasan por apiFetch)
+const printApiHeaders = (): Record<string, string> => {
+  const token = getAuthToken();
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+};
 
 const getPrintApiBaseUrl = () => {
   const envUrl = (import.meta as any).env.VITE_API_BASE_URL;
@@ -192,7 +202,7 @@ export default function OtherTabs({
 
   useEffect(() => {
     // Load printer config from backend
-    fetch(`${PRINT_API_BASE_URL}/print/status`)
+    fetch(`${PRINT_API_BASE_URL}/print/status`, { headers: printApiHeaders() })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!data) return;
@@ -204,7 +214,7 @@ export default function OtherTabs({
       })
       .catch(() => setPrinterStatus('error'));
 
-    fetch(`${PRINT_API_BASE_URL}/print/config`)
+    fetch(`${PRINT_API_BASE_URL}/print/config`, { headers: printApiHeaders() })
       .then(r => r.ok ? r.json() : null)
       .then(cfg => {
         if (!cfg) return;
@@ -317,7 +327,7 @@ export default function OtherTabs({
     try {
       await fetch(`${PRINT_API_BASE_URL}/print/config`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: printApiHeaders(),
         body: JSON.stringify({
           printer_name:          selectedPrinter,
           station_name:          pStationName,
@@ -540,11 +550,11 @@ export default function OtherTabs({
       if (selectedPrinter) {
         await fetch(`${PRINT_API_BASE_URL}/print/config`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: printApiHeaders(),
           body: JSON.stringify({ printer_name: selectedPrinter }),
         });
       }
-      const res = await fetch(`${PRINT_API_BASE_URL}/print/test`, { method: 'POST' });
+      const res = await fetch(`${PRINT_API_BASE_URL}/print/test`, { method: 'POST', headers: printApiHeaders() });
       const data = await res.json();
       setPrinterTestOk(data.ok === true);
     } catch { setPrinterTestOk(false); }

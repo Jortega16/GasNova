@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import secrets as _secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -37,15 +39,47 @@ def _seed_database() -> None:
         db.close()
 
 
+def _load_or_create_token_secret() -> str:
+    """Secreto HMAC para firmar tokens de sesión, persistido en system_settings.
+
+    Se genera una sola vez por instalación y sobrevive reinicios del
+    contenedor, así los tokens emitidos siguen siendo válidos tras un
+    redeploy. Si la BD no está disponible se usa un secreto efímero
+    (los tokens se invalidan al reiniciar, pero la API sigue operativa).
+    """
+    from .models import SystemSetting
+    db = SessionLocal()
+    try:
+        row = db.query(SystemSetting).filter(SystemSetting.key == "api_token_secret").first()
+        if row and row.value:
+            return row.value
+        secret = _secrets.token_hex(32)
+        db.add(SystemSetting(key="api_token_secret", value=secret))
+        db.commit()
+        return secret
+    except Exception as exc:
+        logger.warning("No se pudo persistir el secreto de tokens (se usa efímero): %s", exc)
+        return _secrets.token_hex(32)
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
-    try:
-        init_db()
-    except Exception as exc:
-        logger.warning("Could not initialize database tables: %s", exc)
+    testing = os.getenv("GASNOVA_TESTING") == "1"
 
-    _seed_database()
+    if not testing:
+        try:
+            init_db()
+        except Exception as exc:
+            logger.warning("Could not initialize database tables: %s", exc)
+
+        _seed_database()
+        app.state.api_token_secret = _load_or_create_token_secret()
+    else:
+        # En tests la BD real no se toca: cada suite inyecta su propio engine.
+        app.state.api_token_secret = _secrets.token_hex(32)
 
     # Shared PTS-2 client singleton — stored on app.state so all requests
     # share the same connection instead of creating one per request.
@@ -54,15 +88,16 @@ async def lifespan(app: FastAPI):
     # Mapa pump_id → shift_id capturado en authorize; consumido al crear pending.
     app.state.pump_auth_shifts: dict[int, str] = {}
 
-    worker_task = asyncio.create_task(scheduled_price_worker())
+    worker_task = asyncio.create_task(scheduled_price_worker()) if not testing else None
 
     yield
 
-    worker_task.cancel()
-    try:
-        await worker_task
-    except asyncio.CancelledError:
-        pass
+    if worker_task is not None:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
 
     try:
         app.state.pts2_client.close()
@@ -94,6 +129,54 @@ def create_app() -> FastAPI:
         ],
     )
 
+    app.state.auth_enabled = os.getenv("GASNOVA_DISABLE_AUTH", "0") != "1"
+
+    # ── Autenticación por token de sesión ────────────────────────────────────
+    # Todos los endpoints requieren `Authorization: Bearer <token>` salvo la
+    # lista mínima necesaria para llegar a la pantalla de login y monitoreo
+    # básico. El WebSocket del PTS-2 (/ptsWebSocket) no pasa por este
+    # middleware (solo intercepta scope HTTP), así el controlador físico
+    # sigue conectándose sin cambios.
+    #
+    # ORDEN: este middleware se registra ANTES de agregar CORSMiddleware para
+    # que CORS quede por FUERA y agregue sus headers también a las respuestas
+    # 401 — de lo contrario el navegador las bloquea como error de red y el
+    # frontend nunca ve el 401 (no puede redirigir al login).
+    _PUBLIC_EXACT = {
+        ("GET", "/"),
+        ("GET", "/health"),
+        ("GET", "/docs"),
+        ("GET", "/openapi.json"),
+        ("GET", "/redoc"),
+        ("GET", "/redocs"),
+        ("GET", "/users"),          # perfiles para la pantalla de login (sin PINs)
+        ("POST", "/users/login"),   # emite el token
+        ("GET", "/print/download-bat"),  # descarga por <a href>, no lleva headers
+    }
+
+    @app.middleware("http")
+    async def require_session_token(request: Request, call_next):
+        if not getattr(request.app.state, "auth_enabled", False):
+            return await call_next(request)
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        if (request.method, request.url.path) in _PUBLIC_EXACT:
+            return await call_next(request)
+
+        from .security import verify_session_token
+        secret = getattr(request.app.state, "api_token_secret", None)
+        auth_header = request.headers.get("authorization", "")
+        token = auth_header[7:] if auth_header.lower().startswith("bearer ") else ""
+        claims = verify_session_token(token, secret) if (secret and token) else None
+        if claims is None:
+            return JSONResponse(
+                status_code=401,
+                content={"ok": False, "error": "No autorizado: inicia sesión con tu PIN."},
+            )
+        request.state.user = claims
+        return await call_next(request)
+
+    # CORS al final = capa más externa (ver nota de orden arriba)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

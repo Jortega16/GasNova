@@ -14,6 +14,7 @@ import type {
   PendingTransactionProcessParams,
 } from "./types";
 import { getPrintStationId } from "../printStation";
+import { getAuthToken, clearAuthSession, notifyUnauthorized } from "../auth";
 
 const getApiBaseUrl = (): string => {
   const envUrl = (import.meta as unknown as { env: Record<string, string> }).env
@@ -38,15 +39,23 @@ async function apiFetch<T>(
 ): Promise<BackendApiResponse<T>> {
   try {
     const url = `${API_BASE_URL}${path.startsWith("/") ? "" : "/"}${path}`;
+    const token = getAuthToken();
     const res = await fetch(url, {
       ...options,
       headers: {
         "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(options?.headers || {}),
       },
     });
 
     if (!res.ok) {
+      // 401 en cualquier endpoint (excepto el propio login, donde significa
+      // "PIN incorrecto") = sesión expirada/inválida → volver al login.
+      if (res.status === 401 && !path.includes("users/login")) {
+        clearAuthSession();
+        notifyUnauthorized();
+      }
       const errText = await res.text();
       return {
         ok: false,

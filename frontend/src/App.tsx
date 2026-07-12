@@ -21,6 +21,7 @@ import ShiftReceiptModal from './components/ShiftReceiptModal';
 import ShiftCloseConfirmModal from './components/ShiftCloseConfirmModal';
 import NozzleTransactionsModal from './components/NozzleTransactionsModal';
 import { useSystemSettings } from './hooks/useSystemSettings';
+import { getAuthToken, getStoredAuthUser, setAuthSession, clearAuthSession, UNAUTHORIZED_EVENT } from './auth';
 import { useVisibilityPolling } from './hooks/useVisibilityPolling';
 import { usePermissions } from './hooks/usePermissions';
 import { litersToDisplay, displayToLiters, unitLabel, formatVolume } from './utils/units';
@@ -120,12 +121,35 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Authentication & Users State Database
+  // Authentication & Users State Database.
+  // Sin sesión guardada, arranca en la pantalla de login (currentUser=null);
+  // con token en localStorage, restaura el operador de la sesión anterior.
   const [users, setUsers] = useState<UserProfile[]>(INITIAL_USERS);
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(INITIAL_USERS[1]); // DEFAULT: John Doe
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
+    const stored = getStoredAuthUser();
+    if (getAuthToken() && stored) {
+      return {
+        id: stored.id,
+        name: stored.name,
+        username: stored.username,
+        role: stored.role as UserProfile['role'],
+        avatar: stored.avatar || '👤',
+        pin: '',
+        status: 'Active',
+      };
+    }
+    return null;
+  });
   const [pendingSwitchUser, setPendingSwitchUser] = useState<UserProfile | null>(null);
   const [quickSwitchPin, setQuickSwitchPin] = useState<string>('');
   const [quickSwitchError, setQuickSwitchError] = useState<string>('');
+
+  // Sesión expirada o token inválido (401 del backend) → volver al login
+  useEffect(() => {
+    const onUnauthorized = () => setCurrentUser(null);
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+  }, []);
 
   // Primary state models
   const [dispensers, setDispensers] = useState<DispenserState[]>(getOperationalInitialDispensers);
@@ -2180,6 +2204,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    clearAuthSession();
     setCurrentUser(null);
     setPendingSwitchUser(null);
     setQuickSwitchPin('');
@@ -2197,6 +2222,17 @@ export default function App() {
 
     api.verifyUserPin(pendingSwitchUser.username, quickSwitchPin).then(res => {
       if (res.ok && res.data) {
+        // Rotar la sesión de la API al operador entrante
+        const data = res.data as { token?: string };
+        if (data.token) {
+          setAuthSession(data.token, {
+            id: pendingSwitchUser.id,
+            name: pendingSwitchUser.name,
+            username: pendingSwitchUser.username,
+            role: pendingSwitchUser.role,
+            avatar: pendingSwitchUser.avatar,
+          });
+        }
         setCurrentUser(pendingSwitchUser);
         setPendingSwitchUser(null);
         setQuickSwitchPin('');

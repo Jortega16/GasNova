@@ -116,8 +116,15 @@ def _auto_close_transaction(websocket: WebSocket, pump_id: int) -> None:
 
 
 def _consume_auth_shift(websocket: WebSocket, pump_id: int) -> str | None:
-    """Recupera y limpia el shift_id capturado en la autorización para este pump."""
-    auth_shifts: dict = getattr(websocket.app.state, "pump_auth_shifts", {})
+    """Recupera y limpia el shift_id capturado en la autorización para este pump.
+
+    Best-effort: si el websocket no tiene app/state (p. ej. en tests con un
+    fake), simplemente no hay turno capturado y se usa el turno activo.
+    """
+    app = getattr(websocket, "app", None)
+    if app is None:
+        return None
+    auth_shifts: dict = getattr(app.state, "pump_auth_shifts", {})
     return auth_shifts.pop(pump_id, None)
 
 

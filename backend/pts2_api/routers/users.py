@@ -7,13 +7,13 @@ import uuid
 import logging
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import User
 from ..schemas import CommandResponse, UserCreate, UserResponse, LoginRequest
-from ..security import hash_pin, verify_pin
+from ..security import hash_pin, verify_pin, create_session_token
 
 logger = logging.getLogger("pts2_api.routers.users")
 
@@ -64,6 +64,7 @@ def seed_initial_users_if_empty(db: Session) -> None:
 @router.get("", response_model=CommandResponse, summary="List all operators")
 def list_users(db: Session = Depends(get_db)) -> CommandResponse:
     """List all registered station operators."""
+    seed_initial_users_if_empty(db)
     users = db.query(User).all()
     serialized = [
         UserResponse(
@@ -134,9 +135,9 @@ def delete_user(user_id: str, db: Session = Depends(get_db)) -> CommandResponse:
     "/login", response_model=CommandResponse, summary="Verify PIN authentication"
 )
 def verify_pin_endpoint(
-    request: LoginRequest, db: Session = Depends(get_db)
+    request: LoginRequest, req: Request, db: Session = Depends(get_db)
 ) -> CommandResponse:
-    """Verify operator PIN for relevo (shift handover) authentication."""
+    """Verify operator PIN and issue a session token for the API."""
     user = db.query(User).filter(User.username == request.username).first()
     if not user:
         raise HTTPException(
@@ -158,4 +159,11 @@ def verify_pin_endpoint(
         avatar=user.avatar,
         status=user.status,
     )
-    return CommandResponse(data=res.model_dump())
+    data = res.model_dump()
+
+    # Token de sesión para el middleware de autenticación de la API
+    secret = getattr(req.app.state, "api_token_secret", None)
+    if secret:
+        data["token"] = create_session_token(user.username, user.role, secret)
+
+    return CommandResponse(data=data)

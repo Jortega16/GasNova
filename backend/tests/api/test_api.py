@@ -60,6 +60,7 @@ class FakePumps:
         return {"Pump": pump_id, "Prices": []}
 
     def set_prices(self, pump_id, prices):
+        self.calls.append(("set_prices", pump_id, prices))
         return {"Pump": pump_id, "Prices": prices}
 
     def get_display_data(self, pump_id):
@@ -75,6 +76,11 @@ class FakePumps:
 class FakeClient:
     def __init__(self):
         self.pumps = FakePumps()
+        self.requests = []
+
+    def request_data(self, request_type, data=None):
+        self.requests.append((request_type, data))
+        return {"Accepted": True}
 
     def healthcheck(self):
         return {"ok": True, "datetime": {"DateTime": "2026-05-27T13:00:00"}}
@@ -84,8 +90,36 @@ class FakeClient:
 
 
 def make_test_client(fake_client):
+    """App de prueba con PTS-2 falso y base de datos SQLite en memoria.
+
+    Los endpoints que tocan la BD (authorize captura el turno activo, etc.)
+    necesitan un engine real con tablas — el lifespan no corre aquí (TestClient
+    sin context manager) y en modo test tampoco tocaría la BD real.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from pts2_api.database import Base, get_db
+    from pts2_api import models  # noqa: F401 — registra las tablas en Base
+
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    def _override_get_db():
+        db = TestingSession()
+        try:
+            yield db
+        finally:
+            db.close()
+
     app = create_app()
     app.dependency_overrides[get_pts2_client] = lambda: fake_client
+    app.dependency_overrides[get_db] = _override_get_db
     return TestClient(app)
 
 
@@ -127,7 +161,10 @@ def test_authorize_volume_endpoint_calls_sdk():
 
     assert response.status_code == 200
     assert response.json()["data"] == {"Accepted": True}
-    assert fake.pumps.calls == [("authorize_volume", 1, 1, 20.0)]
+    # Con preset (type+dose) el endpoint arma el payload jsonPTS completo
+    assert fake.requests == [
+        ("PumpAuthorize", {"Pump": 1, "Nozzle": 1, "Type": "Volume", "Dose": 20.0}),
+    ]
 
 
 def test_authorize_free_endpoint_calls_sdk():

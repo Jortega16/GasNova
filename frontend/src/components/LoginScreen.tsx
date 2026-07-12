@@ -1,17 +1,8 @@
 import React, { useState } from 'react';
 import { UserProfile } from '../types';
 import { api } from '../api';
-import { 
-  Lock, 
-  User, 
-  Users, 
-  AlertCircle, 
-  Check, 
-  X, 
-  ChevronRight,
-  Shield, 
-  Delete 
-} from 'lucide-react';
+import { setAuthSession } from '../auth';
+import { Users, AlertCircle, Check, Shield, Delete } from 'lucide-react';
 
 interface LoginScreenProps {
   users: UserProfile[];
@@ -59,6 +50,17 @@ export default function LoginScreen({ users, onLoginSuccess }: LoginScreenProps)
 
     api.verifyUserPin(selectedUser.username, pin).then(res => {
       if (res.ok && res.data) {
+        // Guarda la sesión de la API (token Bearer) emitida por el backend
+        const data = res.data as { token?: string; id?: string; name?: string; username?: string; role?: string; avatar?: string };
+        if (data.token) {
+          setAuthSession(data.token, {
+            id: data.id || selectedUser.id,
+            name: data.name || selectedUser.name,
+            username: data.username || selectedUser.username,
+            role: data.role || selectedUser.role,
+            avatar: data.avatar || selectedUser.avatar,
+          });
+        }
         setSuccess(true);
         setErrorMsg('');
         setTimeout(() => {
@@ -133,22 +135,13 @@ export default function LoginScreen({ users, onLoginSuccess }: LoginScreenProps)
             <div className="p-3.5 bg-slate-100/5 rounded-xl border border-white/5 space-y-2">
               <p className="text-[10px] uppercase font-mono tracking-widest text-slate-400 font-extrabold flex items-center gap-1.5">
                 <Shield className="w-3.5 h-3.5 text-orange-400" />
-                PIN CREDENCIALES DE DEMO
+                ACCESO PROTEGIDO
               </p>
-              <div className="text-xs space-y-1 text-slate-300 font-mono">
-                <div className="flex justify-between border-b border-white/5 pb-1">
-                  <span>Gerente (John Doe):</span> 
-                  <strong className="text-yellow-400">PIN: 0000</strong>
-                </div>
-                <div className="flex justify-between border-b border-white/5 pb-1">
-                  <span>Operador (Carlos Ruiz):</span> 
-                  <strong className="text-yellow-400">PIN: 1111</strong>
-                </div>
-                <div className="flex justify-between pb-0.5">
-                  <span>Admin Global:</span> 
-                  <strong className="text-yellow-400">PIN: 1234</strong>
-                </div>
-              </div>
+              <p className="text-xs text-slate-300 leading-relaxed font-sans">
+                Cada acción en el sistema queda registrada bajo el operador que inició sesión.
+                Si olvidaste tu PIN, solicita a un administrador que lo restablezca desde
+                Usuarios / Roles.
+              </p>
             </div>
           </div>
 
@@ -191,19 +184,6 @@ export default function LoginScreen({ users, onLoginSuccess }: LoginScreenProps)
                 ))}
               </div>
 
-              <div className="pt-4 border-t border-neutral-100 flex justify-center">
-                <button
-                  onClick={() => {
-                    // Instantly login as Manager for supreme convenience
-                    const adminUser = users.find(u => u.username === 'admin') || users[0];
-                    onLoginSuccess(adminUser);
-                  }}
-                  className="bg-slate-800 hover:bg-slate-900 text-white font-sans font-bold text-xs py-2 px-4 rounded-xl shadow cursor-pointer transition-all hover:scale-102 flex items-center gap-1.5"
-                >
-                  <span>Bypass Rápido debug (Admin)</span>
-                  <ChevronRight className="w-4 h-4 text-slate-400" />
-                </button>
-              </div>
             </div>
           ) : (
             
@@ -309,16 +289,6 @@ export default function LoginScreen({ users, onLoginSuccess }: LoginScreenProps)
                   title="Retroceder"
                 >
                   <Delete className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* Quick test bypass inside PIN validation view */}
-              <div className="pt-2 text-center text-xs">
-                <button
-                  onClick={() => setPin(selectedUser.pin)}
-                  className="text-[10px] font-mono text-[#355e9e] hover:underline"
-                >
-                  Insertar Clave Correcta ({selectedUser.pin})
                 </button>
               </div>
 

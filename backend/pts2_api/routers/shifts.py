@@ -35,6 +35,7 @@ def seed_initial_shift_if_empty(db: Session) -> None:
 @router.get("", response_model=CommandResponse, summary="Get shift logs")
 def list_shifts(db: Session = Depends(get_db)) -> CommandResponse:
     """Get the history of closed and active station shifts."""
+    seed_initial_shift_if_empty(db)
     shifts = db.query(Shift).order_by(Shift.created_at.desc()).all()
     serialized = [
         ShiftResponse(
