@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -123,10 +124,24 @@ def close_shift(
     db.refresh(active_shift)
     db.refresh(shift_closure)
 
-    # Automatically create a new active shift for the next operator / schedule
-    next_num = int(active_shift.shift_id.split("-")[-1]) + 1
-    date_part = active_shift.shift_id.split("-")[1]
-    next_id = f"SH-{date_part}-{str(next_num).zfill(2)}"
+    # Automatically create a new active shift for the next operator / schedule.
+    # Usa la fecha de HOY (no la del turno anterior) y reinicia el consecutivo
+    # al cambiar de día; tolera shift_ids con formato inesperado.
+    today = datetime.now().strftime("%Y%m%d")
+    parts = active_shift.shift_id.split("-")
+    prev_date = parts[1] if len(parts) >= 3 else ""
+    if prev_date == today:
+        try:
+            next_num = int(parts[-1]) + 1
+        except ValueError:
+            next_num = 1
+    else:
+        next_num = 1
+    next_id = f"SH-{today}-{str(next_num).zfill(2)}"
+    # Garantizar unicidad ante colisiones (constraint UNIQUE en shift_id)
+    while db.query(Shift).filter(Shift.shift_id == next_id).first():
+        next_num += 1
+        next_id = f"SH-{today}-{str(next_num).zfill(2)}"
 
     next_shift = Shift(
         shift_id=next_id,

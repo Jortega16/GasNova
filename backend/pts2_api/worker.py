@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .database import SessionLocal
 from .models import DbScheduledPrice
-from .dependencies import get_pts2_client
+from .dependencies import build_pts2_client
 
 logger = logging.getLogger("pts2_api.worker")
 
@@ -91,22 +91,28 @@ def apply_scheduled_prices_cycle(db: Session | None = None) -> None:
                 pump_count = get_pump_count()
 
                 try:
-                    client = get_pts2_client()
-                    for pump_id in range(1, pump_count + 1):
-                        client.pumps.set_prices(
-                            pump_id,
-                            [{"Nozzle": nozzle_number, "Price": schedule.new_price}]
-                        )
-                    client.close()
+                    client = build_pts2_client(db)
+                    try:
+                        for pump_id in range(1, pump_count + 1):
+                            client.pumps.set_prices(
+                                pump_id,
+                                [{"Nozzle": nozzle_number, "Price": schedule.new_price}]
+                            )
+                    finally:
+                        client.close()
                     logger.info(
                         "Applied scheduled price change %s: %s -> %s",
                         schedule.id, schedule.fuel_type, schedule.new_price
                     )
                 except Exception as client_err:
+                    # PTS-2 inalcanzable: dejar el programa en Pending para
+                    # reintentarlo en el próximo ciclo, en vez de marcarlo
+                    # aplicado sin haber cambiado ningún precio.
                     logger.warning(
-                        "Could not apply price %s to PTS-2: %s",
+                        "Could not apply price %s to PTS-2 (se reintentará): %s",
                         schedule.id, client_err
                     )
+                    continue
 
                 schedule.status = "Applied"
                 db.commit()

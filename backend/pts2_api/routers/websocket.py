@@ -47,9 +47,8 @@ async def pump_events(websocket: WebSocket, pump_id: int = 1, interval: float = 
 
 # ─── PTS-2 Event Server WebSocket ──────────────────────────────────────────
 
-from fastapi import Depends
 from sqlalchemy.orm import Session
-from ..database import get_db
+from ..database import SessionLocal
 from ..models import TankMeasurement, InTankDelivery, SystemAlert, PumpEventLog
 from ..transaction_store import upsert_pending_transaction
 import json
@@ -304,7 +303,7 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
 
 
 @router.websocket("/ptsWebSocket")
-async def pts_websocket(websocket: WebSocket, db: Session = Depends(get_db)):
+async def pts_websocket(websocket: WebSocket):
     pts_id = websocket.headers.get("x-pts-id")
     firmware = websocket.headers.get("x-pts-firmware-version-datetime")
     config_id = websocket.headers.get("x-pts-configuration-identifier")
@@ -333,8 +332,16 @@ async def pts_websocket(websocket: WebSocket, db: Session = Depends(get_db)):
 
             packets = message.get("Packets", [])
 
+            # Sesión corta por lote de paquetes: la conexión del PTS-2 vive
+            # días, y una sesión de BD retenida todo ese tiempo queda inservible
+            # si PostgreSQL se reinicia (pool_pre_ping solo valida al prestar
+            # la conexión, no las ya prestadas).
             for packet in packets:
-                await handle_packet(packet, websocket, db)
+                db = SessionLocal()
+                try:
+                    await handle_packet(packet, websocket, db)
+                finally:
+                    db.close()
 
     except WebSocketDisconnect:
         logger.warning("PTS-2 desconectado")

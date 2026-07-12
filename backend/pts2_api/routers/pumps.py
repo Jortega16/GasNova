@@ -726,6 +726,17 @@ def create_pending_transaction(
     db: Session = Depends(get_db),
 ) -> CommandResponse:
     """Almacena un despacho pendiente de forma transitoria en la base de datos."""
+    # No hubo despacho real (manguera levantada y colgada sin surtir combustible):
+    # no crear una "venta" fantasma de $0.00 / 0 litros. Misma guarda que en el
+    # endpoint de captura y en el handler de WebSocket.
+    if (request.volume or 0) <= 0 and (request.amount or 0) <= 0:
+        return CommandResponse(data={
+            "created": False,
+            "skipped": True,
+            "message": "Sin despacho real (volumen y monto en cero) — no se registró como venta.",
+            "trx_id": request.trx_id,
+        })
+
     pending, created = upsert_pending_transaction(
         db,
         pump_id=pump_id,
