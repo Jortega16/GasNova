@@ -115,6 +115,26 @@ export const api = {
     return { ok: res.ok, pumps: res.data?.pumps, error: res.error };
   },
 
+  async getLiveState(
+    pumpCount: number = 8,
+  ): Promise<{
+    ok: boolean;
+    pumps?: BackendPumpStatusItem[];
+    tanks?: BackendTankMeasurement[];
+    error?: string;
+  }> {
+    const res = await apiFetch<{
+      pumps: BackendPumpStatusItem[];
+      tanks: BackendTankMeasurement[];
+    }>(`live/state?pump_count=${pumpCount}`);
+    return {
+      ok: res.ok,
+      pumps: res.data?.pumps,
+      tanks: res.data?.tanks,
+      error: res.error,
+    };
+  },
+
   async authorizePump(
     pumpId: number,
     nozzle: number,

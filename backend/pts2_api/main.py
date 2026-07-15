@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pts2_sdk.exceptions import PTS2Error
 
 from .routers import (
-    health, pumps, reports, tanks, websocket,
+    health, pumps, reports, tanks, websocket, live,
     users, shifts, scheduled_prices, print_receipt, settings, configuration, sync,
 )
 from .database import init_db, SessionLocal
@@ -118,6 +118,7 @@ def create_app() -> FastAPI:
             {"name": "health", "description": "Connectivity and controller health checks."},
             {"name": "pumps", "description": "Pump status, authorization and POS workflow commands."},
             {"name": "tanks", "description": "ATG probe and tank data."},
+            {"name": "live", "description": "Unified live-state snapshot (pumps + tanks) for dashboard polling."},
             {"name": "reports", "description": "Report queries and exports."},
             {"name": "websocket", "description": "Real-time event stream for POS dashboards."},
             {"name": "users", "description": "User profiles and quick switch authentication."},
@@ -187,6 +188,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(pumps.router)
     app.include_router(tanks.router)
+    app.include_router(live.router)
     app.include_router(reports.router)
     app.include_router(websocket.router)
     app.include_router(users.router)

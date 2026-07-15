@@ -9,6 +9,7 @@ from pts2_sdk import PTS2Client
 from ..dependencies import get_pts2_client
 from sqlalchemy.orm import Session
 from ..database import get_db
+from ..live_state import live_state
 from ..models import InTankDelivery, TankConfiguration
 from ..schemas import CommandResponse, DeliveryCreate
 
@@ -43,6 +44,10 @@ def all_probe_measurements(client: PTS2Client = Depends(get_pts2_client)) -> Com
     """Obtiene todas las mediciones de las sondas conectadas."""
     try:
         data = [item.model_dump(by_alias=True, exclude_none=True) for item in client.probes.get_all_measurements()]
+        for item in data:
+            tank_id = item.get("Probe") or item.get("Tank")
+            if tank_id is not None:
+                live_state.update_tank(tank_id, item)
         return CommandResponse(data=data)
     finally:
         client.close()

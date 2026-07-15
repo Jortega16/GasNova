@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Path, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Path, Query, HTTPException, Request, status
 from pydantic import BaseModel
 
 from pts2_sdk import PTS2Client
@@ -12,6 +12,7 @@ from pts2_sdk import PTS2Client
 from ..dependencies import get_pts2_client
 from sqlalchemy.orm import Session
 from ..database import get_db
+from ..live_state import live_state
 from ..models import PumpTransaction, Shift, PumpConfiguration, PendingTransaction
 from ..schemas import (
     AuthorizeRequest,
@@ -100,6 +101,19 @@ def get_all_pumps_status(
             idx = active_nozzle - 1
             if 0 <= idx < len(nozzle_prices):
                 active_price = nozzle_prices[idx] or None
+
+        # Este sondeo ya trae todo lo que necesita el dashboard — se cachea
+        # aquí para que endpoints puntuales (p. ej. /pumps/{id}/prices) o el
+        # snapshot unificado /live/state no repitan un round-trip al PTS-2.
+        live_state.update_pump(
+            pump_id,
+            status_type=status_type,
+            nozzle=active_nozzle,
+            nozzle_prices=nozzle_prices,
+            volume=data.get("Volume"),
+            amount=data.get("Amount"),
+            transaction=data.get("Transaction"),
+        )
 
         results.append(PumpStatusItem(
             pump=pump_id,
@@ -311,11 +325,12 @@ def close_transaction(
 )
 def totals(
     pump_id: int = Path(ge=1, description="ID del surtidor para el que se consultan los totales."),
+    nozzle: int = Query(1, ge=1, le=6, description="Manguera del surtidor a consultar."),
     client: PTS2Client = Depends(get_pts2_client),
 ) -> CommandResponse:
     """Obtiene los totales acumulados del surtidor."""
     try:
-        data = client.pumps.get_totals(pump_id)
+        data = client.pumps.get_totals(pump_id, nozzle=nozzle)
         return CommandResponse(data=data.model_dump(by_alias=True, exclude_none=True))
     finally:
         _close(client)
@@ -333,6 +348,20 @@ def prices(
     db: Session = Depends(get_db),
 ) -> CommandResponse:
     """Recupera los precios actuales del surtidor."""
+    # El sondeo periódico de /pumps/status-all ya reporta NozzlePrices por
+    # bomba, así que si tenemos un valor reciente en caché lo devolvemos de
+    # inmediato en vez de bloquear esperando un round-trip nuevo al PTS-2.
+    cached_prices = live_state.get_nozzle_prices(pump_id)
+    if cached_prices is not None:
+        try:
+            return CommandResponse(data={
+                "Pump": pump_id,
+                "NozzlePrices": cached_prices,
+                "_source": "live_cache",
+            })
+        finally:
+            _close(client)
+
     try:
         try:
             return CommandResponse(data=client.pumps.get_prices(pump_id))

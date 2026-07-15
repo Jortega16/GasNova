@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from typing import Any, TYPE_CHECKING
 
-from .exceptions import PTS2ValidationError
+from .exceptions import PTS2TimeoutError, PTS2ValidationError
 from .models.pumps import PumpStatus, PumpTotals, PumpTransaction
 
 if TYPE_CHECKING:
@@ -84,12 +85,62 @@ class PumpsAPI:
     def resume(self, pump_id: int) -> Any:
         return self._client.request_data("PumpResume", {"Pump": pump_id})
 
-    def get_totals(self, pump_id: int) -> PumpTotals:
-        data = self._client.request_data("PumpGetTotals", {"Pump": pump_id})
-        return PumpTotals.model_validate(data or {"Pump": pump_id})
+    def get_totals(
+        self,
+        pump_id: int,
+        nozzle: int | None = None,
+        fuel_grade_id: int | None = None,
+        timeout: float = 3.0,
+        poll_interval: float = 0.3,
+    ) -> PumpTotals:
+        """Requests total counters for a pump nozzle.
 
-    def get_prices(self, pump_id: int) -> Any:
-        return self._client.request_data("PumpGetPrices", {"Pump": pump_id})
+        Per the jsonPTS protocol, PumpGetTotals requires either "Nozzle" or
+        "FuelGradeId" to identify which nozzle's totals are being requested,
+        and only confirms that the controller accepted the request — the
+        actual totals arrive asynchronously as a PumpTotals packet the next
+        time PumpGetStatus is polled.
+        """
+        if nozzle is None and fuel_grade_id is None:
+            nozzle = 1
+        data: dict[str, Any] = {"Pump": pump_id}
+        if nozzle is not None:
+            data["Nozzle"] = nozzle
+        if fuel_grade_id is not None:
+            data["FuelGradeId"] = fuel_grade_id
+        self._client.request("PumpGetTotals", data)
+        deadline = time.monotonic() + timeout
+        while True:
+            packet = self._client.request("PumpGetStatus", {"Pump": pump_id})
+            if packet.type == "PumpTotals":
+                return PumpTotals.model_validate(packet.data or {"Pump": pump_id})
+            if time.monotonic() >= deadline:
+                raise PTS2TimeoutError(
+                    f"Timed out waiting for pump {pump_id} to report totals"
+                )
+            time.sleep(poll_interval)
+
+    def get_prices(self, pump_id: int, timeout: float = 3.0, poll_interval: float = 0.3) -> Any:
+        """Requests pump nozzle prices.
+
+        Per the jsonPTS protocol, PumpGetPrices only confirms that the
+        controller accepted the request ("OK") — it does not carry the
+        prices themselves. The controller reports the actual values
+        asynchronously as a PumpPrices packet the next time PumpGetStatus
+        is polled, so we send the request and then poll for it.
+        """
+        self._client.request("PumpGetPrices", {"Pump": pump_id})
+        deadline = time.monotonic() + timeout
+        while True:
+            packet = self._client.request("PumpGetStatus", {"Pump": pump_id})
+            if packet.type == "PumpPrices":
+                data = packet.data if isinstance(packet.data, dict) else {}
+                return {"Pump": pump_id, "NozzlePrices": data.get("Prices")}
+            if time.monotonic() >= deadline:
+                raise PTS2TimeoutError(
+                    f"Timed out waiting for pump {pump_id} to report prices"
+                )
+            time.sleep(poll_interval)
 
     def set_prices(self, pump_id: int, prices: Mapping[str, Any] | list[Any]) -> Any:
         return self._client.request_data("PumpSetPrices", {"Pump": pump_id, "Prices": prices})
@@ -101,8 +152,27 @@ class PumpsAPI:
     def close_transaction(self, pump_id: int) -> Any:
         return self._client.request_data("PumpCloseTransaction", {"Pump": pump_id})
 
-    def get_display_data(self, pump_id: int) -> Any:
-        return self._client.request_data("PumpGetDisplayData", {"Pump": pump_id})
+    def get_display_data(
+        self, pump_id: int, timeout: float = 3.0, poll_interval: float = 0.3
+    ) -> Any:
+        """Requests pump display data (dispensed volume/amount).
+
+        Per the jsonPTS protocol, PumpGetDisplayData only confirms that the
+        controller accepted the request; the actual data arrives
+        asynchronously as a PumpDisplayData packet the next time
+        PumpGetStatus is polled.
+        """
+        self._client.request("PumpGetDisplayData", {"Pump": pump_id})
+        deadline = time.monotonic() + timeout
+        while True:
+            packet = self._client.request("PumpGetStatus", {"Pump": pump_id})
+            if packet.type == "PumpDisplayData":
+                return packet.data
+            if time.monotonic() >= deadline:
+                raise PTS2TimeoutError(
+                    f"Timed out waiting for pump {pump_id} to report display data"
+                )
+            time.sleep(poll_interval)
 
     def lock(self, pump_id: int) -> Any:
         return self._client.request_data("PumpLock", {"Pump": pump_id})

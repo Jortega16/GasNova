@@ -267,6 +267,136 @@ def test_upload_pump_transaction_is_saved_as_pending_not_completed(client):
         db.close()
 
 
+def test_ws_live_state_endpoint_accepts_connection(client):
+    with client.websocket_connect("/ws/live-state"):
+        pass
+
+
+def test_live_broadcaster_notifies_connected_clients():
+    import asyncio
+    from pts2_api.live_broadcast import LiveBroadcaster
+
+    class FakeWs:
+        def __init__(self):
+            self.accepted = False
+            self.sent = []
+
+        async def accept(self):
+            self.accepted = True
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    async def run():
+        broadcaster = LiveBroadcaster()
+        ws = FakeWs()
+        await broadcaster.connect(ws)
+        await broadcaster.notify_changed("UploadStatus", pump_id=1)
+        return ws
+
+    ws = asyncio.run(run())
+    assert ws.accepted is True
+    assert ws.sent == [{"type": "live_state_changed", "reason": "UploadStatus", "pump": 1}]
+
+
+def test_upload_status_updates_live_state_and_notifies(monkeypatch):
+    from pts2_api.routers import websocket as ws_module
+    from pts2_api.live_state import live_state
+    import asyncio
+
+    live_state.clear()
+    notified = []
+
+    async def fake_notify(reason, pump_id=None):
+        notified.append((reason, pump_id))
+
+    monkeypatch.setattr(ws_module.live_broadcaster, "notify_changed", fake_notify)
+
+    class FakeWebSocket:
+        async def send_text(self, message):
+            pass
+
+    db = TestingSessionLocal()
+    try:
+        packet = {
+            "Id": 1,
+            "Type": "UploadStatus",
+            "Data": {"Pump": 3, "Status": "PumpFillingStatus", "Nozzle": 2, "Volume": 5.0, "Amount": 20.0},
+        }
+        asyncio.run(ws_module.handle_packet(packet, FakeWebSocket(), db))
+    finally:
+        db.close()
+
+    assert notified == [("UploadStatus", 3)]
+    snap = live_state.get_all_pumps()[3]
+    assert snap["status_type"] == "PumpFillingStatus"
+    assert snap["nozzle"] == 2
+    assert snap["volume"] == 5.0
+    live_state.clear()
+
+
+def test_upload_tank_measurement_updates_live_state_and_notifies(monkeypatch):
+    from pts2_api.routers import websocket as ws_module
+    from pts2_api.live_state import live_state
+    import asyncio
+
+    live_state.clear()
+    notified = []
+
+    async def fake_notify(reason, pump_id=None):
+        notified.append((reason, pump_id))
+
+    monkeypatch.setattr(ws_module.live_broadcaster, "notify_changed", fake_notify)
+
+    class FakeWebSocket:
+        async def send_text(self, message):
+            pass
+
+    db = TestingSessionLocal()
+    try:
+        packet = {
+            "Id": 1,
+            "Type": "UploadTankMeasurement",
+            "Data": {"Tank": 2, "Probe": 2, "Volume": 1234.5, "Height": 500, "Temperature": 20.0},
+        }
+        asyncio.run(ws_module.handle_packet(packet, FakeWebSocket(), db))
+    finally:
+        db.close()
+
+    assert notified == [("UploadTankMeasurement", None)]
+    assert live_state.get_all_tanks()[2]["Volume"] == 1234.5
+    live_state.clear()
+
+
+def test_upload_pump_transaction_notifies_live_broadcaster(monkeypatch):
+    from pts2_api.routers import websocket as ws_module
+    import asyncio
+
+    notified = []
+
+    async def fake_notify(reason, pump_id=None):
+        notified.append((reason, pump_id))
+
+    monkeypatch.setattr(ws_module.live_broadcaster, "notify_changed", fake_notify)
+
+    class FakeWebSocket:
+        async def send_text(self, message):
+            pass
+
+    db = TestingSessionLocal()
+    try:
+        packet = {
+            "Id": 1,
+            "Type": "UploadPumpTransaction",
+            "Data": {"Pump": 4, "Transaction": 321, "Nozzle": 1, "Volume": 3.0, "Amount": 12.0},
+        }
+        asyncio.run(ws_module.handle_packet(packet, FakeWebSocket(), db))
+    finally:
+        db.close()
+
+    assert notified == [("UploadPumpTransaction", 4)]
+
+
 def test_create_delivery_stores_in_db(client):
     payload = {
         "volume": 5000.0,

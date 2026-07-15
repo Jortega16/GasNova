@@ -11,8 +11,30 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pts2_sdk.exceptions import PTS2Error
 
 from ..dependencies import get_pts2_client
+from ..live_broadcast import live_broadcaster
+from ..live_state import live_state
 
 router = APIRouter(tags=["websocket"])
+
+
+@router.websocket("/ws/live-state")
+async def live_state_stream(websocket: WebSocket) -> None:
+    """Avisa al dashboard cuando /live/state tiene datos nuevos que pedir.
+
+    No transmite el snapshot por este socket — solo una señal de "algo
+    cambió" (ver live_broadcast.py). El cliente reacciona re-pidiendo
+    GET /live/state. Si esta conexión se cae, el dashboard vuelve a su
+    polling normal como respaldo.
+    """
+    await live_broadcaster.connect(websocket)
+    try:
+        while True:
+            # No esperamos mensajes del cliente; solo detectamos la desconexión.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        live_broadcaster.disconnect(websocket)
 
 
 @router.websocket("/ws/pumps")
@@ -205,6 +227,7 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
         # Gap 2: cierra la transacción en el PTS-2 automáticamente al recibir UploadPumpTransaction.
         # El PTS-2 queda en PumpEndOfTransactionStatus hasta que el POS envía PumpCloseTransaction.
         _auto_close_transaction(websocket, pump_id_val)
+        await live_broadcaster.notify_changed("UploadPumpTransaction", pump_id_val)
         await websocket.send_text(json.dumps(confirmation(packet_id)))
         return
 
@@ -225,6 +248,11 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
         except Exception as exc:
             logger.error("Error saving TankMeasurement: %s", exc)
             db.rollback()
+        # Independiente del resultado del guardado en BD: la caché en memoria
+        # que alimenta el dashboard no debe perder este dato por un problema
+        # transitorio de base de datos.
+        live_state.update_tank(data.get("Tank", 1), data)
+        await live_broadcaster.notify_changed("UploadTankMeasurement")
         await websocket.send_text(json.dumps(confirmation(packet_id)))
         return
 
@@ -270,9 +298,28 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
         await websocket.send_text(json.dumps(confirmation(packet_id)))
         return
 
+    if packet_type == "UploadStatus":
+        # Empuje periódico de estado de bomba (equivalente a lo que devuelve
+        # PumpGetStatus, pero sin tener que sondear). Solo trae LastPrices
+        # (precio activo), no el arreglo completo de NozzlePrices — por eso
+        # no se pasa nozzle_prices aquí y update_pump conserva el último
+        # arreglo completo que sí llegó por sondeo (ver live_state.py).
+        pump_id_val = data.get("Pump")
+        if pump_id_val is not None:
+            live_state.update_pump(
+                pump_id_val,
+                status_type=data.get("Status") or data.get("Type") or data.get("StatusType"),
+                nozzle=data.get("Nozzle"),
+                volume=data.get("Volume"),
+                amount=data.get("Amount"),
+                transaction=data.get("Transaction"),
+            )
+        await live_broadcaster.notify_changed("UploadStatus", pump_id_val)
+        await websocket.send_text(json.dumps(confirmation(packet_id)))
+        return
+
     if packet_type in {
-        "UploadGpsRecord", "UploadPayment", "UploadShift",
-        "UploadConfiguration", "UploadStatus"
+        "UploadGpsRecord", "UploadPayment", "UploadShift", "UploadConfiguration",
     }:
         logger.info("%s recibido: %s", packet_type, data)
         await websocket.send_text(json.dumps(confirmation(packet_id)))

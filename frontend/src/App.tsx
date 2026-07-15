@@ -23,6 +23,7 @@ import NozzleTransactionsModal from './components/NozzleTransactionsModal';
 import { useSystemSettings } from './hooks/useSystemSettings';
 import { getAuthToken, getStoredAuthUser, setAuthSession, clearAuthSession, UNAUTHORIZED_EVENT } from './auth';
 import { useVisibilityPolling } from './hooks/useVisibilityPolling';
+import { useLiveState } from './hooks/useLiveState';
 import { usePermissions } from './hooks/usePermissions';
 import { litersToDisplay, displayToLiters, unitLabel, formatVolume } from './utils/units';
 
@@ -275,9 +276,13 @@ export default function App() {
   }, 5000);
 
   // ─── PTS-2 Real-time pump status polling (every 2 seconds) ───────────────────
-  // Maps jsonPTS states → dashboard states and updates volume/amount live.
+  // El sondeo en sí vive en useLiveState (un solo GET /live/state); este efecto
+  // solo reacciona cuando llega un snapshot nuevo y traduce jsonPTS → estado UI.
+  const liveState = useLiveState(dispensers.length > 0 ? dispensers.length : 4, !isSimulating);
+
   useEffect(() => {
-    if (isSimulating) return;
+    if (isSimulating || !liveState.pumps) return;
+    const res = liveState;
     /**
      * Maps a jsonPTS status_type string to a dashboard PumpStatus.
      *
@@ -298,11 +303,41 @@ export default function App() {
       }
     };
 
-    const pollPumps = async () => {
-      const res = await api.getAllPumpsStatus(dispensers.length > 0 ? dispensers.length : 4);
-      if (!res.ok || !res.pumps) return;
+    // Niveles de tanque (convierte Litros a Galones si aplica)
+    if (res.tanks) {
+      setTanks(prev => prev.map(t => {
+        const matchId = t.id === 'T-01' ? 1 : t.id === 'T-02' ? 2 : t.id === 'T-03' ? 3 : 0;
+        const meas: any = res.tanks?.find((m: any) => (m.Probe || m.probe || m.tank_id) === matchId);
+        const rawVol = meas ? (meas.ProductVolume ?? meas.product_volume ?? meas.volume) : undefined;
+        if (meas && rawVol !== undefined) {
+          const displayVol = parseFloat(litersToDisplay(rawVol, unitMeasure).toFixed(1));
+          return { ...t, currentLevel: displayVol, status: (displayVol / t.maxCapacity) < 0.15 ? 'Low Level Alert' : 'OK' };
+        }
+        return t;
+      }));
+    }
 
-      setDispensers(prev => prev.map(dispenser => {
+    // Precios de la cara 1 (mismas manguera→combustible que /pumps/1/prices)
+    if (isPts2Online && res.pumps) {
+      const pump1 = res.pumps.find(p => p.pump === 1);
+      const nozzlePrices = pump1?.nozzle_prices;
+      if (nozzlePrices && nozzlePrices.length > 0) {
+        const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
+        setPrices(currentPrices => currentPrices.map(p => {
+          const nozzleIndex = fuelGrades.indexOf(p.fuelType);
+          const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+          const priceVal = nozzlePrices[nozzleNumber - 1];
+          if (priceVal !== undefined && p.price !== priceVal) {
+            return { ...p, price: priceVal, lastUpdated: `Hoy ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` };
+          }
+          return p;
+        }));
+      }
+    }
+
+    if (!res.pumps) return;
+
+    setDispensers(prev => prev.map(dispenser => {
         const pumpData = res.pumps!.find(p => p.pump === dispenser.id);
         if (!pumpData) return dispenser;
 
@@ -510,16 +545,8 @@ export default function App() {
           }),
         };
       }));
-    };
-
-    // Visibility-aware interval: skip polling when the tab is hidden
-    const interval = setInterval(() => {
-      if (!document.hidden) pollPumps();
-    }, 2000);
-    if (!document.hidden) pollPumps();
-    return () => clearInterval(interval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dispensers.length, isSimulating]);
+  }, [liveState.pumps, liveState.tanks, isSimulating, unitMeasure, isPts2Online]);
 
   const [shiftBrackets, setShiftBrackets] = useState([
     { id: '1', name: 'Turno Matutino', start: '06:00', end: '14:00' },
@@ -1778,159 +1805,19 @@ export default function App() {
     }
   }, [currentUser]);
 
-  // WebSocket connection for real-time dispenser updates
-  useEffect(() => {
-    if (isSimulating) return;
+  // Nota: la actualización de dispensadores en tiempo real (antes un WebSocket
+  // por bomba contra /ws/pumps) ahora vive en useLiveState + el efecto de
+  // arriba — un solo pipeline con push por /ws/live-state y fallback a
+  // polling, en vez de dos pipelines paralelos con vocabularios de estado
+  // distintos escribiendo al mismo `dispensers`.
 
-    const sockets: WebSocket[] = [];
-    const baseApiUrl = (import.meta as any).env.VITE_API_BASE_URL || 'http://localhost:8002';
-    const baseWsUrl = baseApiUrl.replace('http://', 'ws://').replace('https://', 'wss://');
-
-    dispensers.forEach(disp => {
-      const wsUrl = `${baseWsUrl}/ws/pumps?pump_id=${disp.id}&interval=0.5`;
-      const ws = new WebSocket(wsUrl);
-
-      ws.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.type === 'pump_status' && payload.data) {
-            const backendStatus = payload.data;
-            const nozzleId = backendStatus.Nozzle || backendStatus.nozzle || 1;
-            const volume = backendStatus.Volume !== undefined ? backendStatus.Volume : backendStatus.volume || 0;
-            const amount = backendStatus.Amount !== undefined ? backendStatus.Amount : backendStatus.amount || 0;
-            const rawStatus = backendStatus.Status || backendStatus.status;
-
-            setDispensers(prev => prev.map(d => {
-              if (d.id === disp.id) {
-                const activeNozzleId = backendStatus.Nozzle || backendStatus.nozzle || 0;
-                return {
-                  ...d,
-                  nozzles: d.nozzles.map((n, idx) => {
-                    const thisNozzleNumber = idx + 1;
-                    const isTargetNozzle = checkIsActiveNozzle(n.fuelType, thisNozzleNumber, backendStatus);
-
-                    let mappedStatus = n.status;
-                    let currentVol = isTargetNozzle ? volume : 0;
-                    let currentAmt = isTargetNozzle ? amount : 0;
-
-                    if (n.status === 'Unpaid') {
-                      mappedStatus = 'Unpaid';
-                      currentVol = n.currentVolume;
-                      currentAmt = n.currentAmount;
-                    } else if (rawStatus === 'PumpOfflineStatus') {
-                      mappedStatus = 'Blocked';
-                    } else if (rawStatus === 'PumpIdleStatus') {
-                      if (isTargetNozzle) {
-                        mappedStatus = 'Ready';
-                      } else {
-                        mappedStatus = 'Idle';
-                      }
-                    } else if (rawStatus === 'PumpFillingStatus') {
-                      if (isTargetNozzle) {
-                        mappedStatus = 'Dispensing';
-                      } else {
-                        mappedStatus = 'Idle';
-                      }
-                    } else if (rawStatus === 'PumpEndOfTransactionStatus') {
-                      if (isTargetNozzle) {
-                        mappedStatus = 'Unpaid';
-                        currentVol = volume || n.currentVolume;
-                        currentAmt = amount || n.currentAmount;
-                      } else {
-                        mappedStatus = 'Idle';
-                      }
-                    }
-
-                    return {
-                      ...n,
-                      status: mappedStatus,
-                      currentAmount: currentAmt,
-                      currentVolume: currentVol,
-                      progressPercent: (isTargetNozzle && rawStatus === 'PumpFillingStatus')
-                        ? Math.min(99, Math.round((volume / 15) * 100))
-                        : (isTargetNozzle ? n.progressPercent : 0)
-                    };
-                  })
-                };
-              }
-              return d;
-            }));
-          }
-        } catch (err) {
-          console.error("Error parsing WebSocket message:", err);
-        }
-      };
-
-      ws.onerror = (err) => {
-        console.warn(`WebSocket error on pump ${disp.id}:`, err);
-      };
-
-      sockets.push(ws);
-    });
-
-    return () => {
-      sockets.forEach(ws => {
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-          ws.close();
-        }
-      });
-    };
-  }, [isSimulating, dispensers.length]);
-
-  // Polling effect to sync with the backend (tanks and prices) when online (isSimulating = false)
+  // Polling effect to sync scheduled prices with the backend when online (isSimulating = false)
+  // Tanks y precios en vivo se sincronizan desde el polling de bombas (/live/state, cada 2s).
   useEffect(() => {
     if (isSimulating) return;
 
     let active = true;
     const interval = setInterval(async () => {
-      // Fetch tank levels (convert Liters to Gallons)
-      const tankRes = await api.getProbeMeasurements();
-      if (!active) return;
-      if (tankRes.ok && tankRes.measurements) {
-        setTanks(prev => prev.map(t => {
-          const matchId = t.id === 'T-01' ? 1 : t.id === 'T-02' ? 2 : t.id === 'T-03' ? 3 : 0;
-          const meas: any = tankRes.measurements?.find((m: any) => (m.Probe || m.probe || m.tank_id) === matchId);
-          const rawVol = meas
-            ? (meas.ProductVolume ?? meas.product_volume ?? meas.volume)
-            : undefined;
-          if (meas && rawVol !== undefined) {
-            // rawVol from PTS-2 is always in liters — convert to display unit
-            const displayVol = parseFloat(litersToDisplay(rawVol, unitMeasure).toFixed(1));
-            return {
-              ...t,
-              currentLevel: displayVol,
-              status: (displayVol / t.maxCapacity) < 0.15 ? 'Low Level Alert' : 'OK',
-            };
-          }
-          return t;
-        }));
-      }
-
-      // Fetch current active prices from PTS-2 (using pump 1 as reference) if online
-      if (isPts2Online) {
-        const priceRes = await api.getPumpPrices(1);
-        if (!active) return;
-        if (priceRes.ok && priceRes.prices && priceRes.prices.length > 0) {
-          const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
-          setPrices(currentPrices => currentPrices.map(p => {
-            const nozzleIndex = fuelGrades.indexOf(p.fuelType);
-            const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
-            const match = priceRes.prices?.find((item: any) => (item.Nozzle || item.nozzle) === nozzleNumber);
-            if (match) {
-              const priceVal = match.Price !== undefined ? match.Price : p.price;
-              if (p.price !== priceVal) {
-                return {
-                  ...p,
-                  price: priceVal,
-                  lastUpdated: `Hoy ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-                };
-              }
-            }
-            return p;
-          }));
-        }
-      }
-
       // Fetch scheduled prices to check if any transitioned from Pending to Applied
       const schedRes = await api.getScheduledPrices();
       if (!active) return;
@@ -1977,7 +1864,7 @@ export default function App() {
       active = false;
       clearInterval(interval);
     };
-  }, [isSimulating, unitMeasure, isPts2Online]);
+  }, [isSimulating]);
 
   // 5-minute auto-consolidation logic per individual transaction
   useEffect(() => {

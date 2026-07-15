@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from pts2_api.dependencies import get_pts2_client
+from pts2_api.live_state import live_state
 from pts2_api.main import create_app
 
 
@@ -53,7 +56,7 @@ class FakePumps:
     def close_transaction(self, pump_id):
         return {"Closed": pump_id}
 
-    def get_totals(self, pump_id):
+    def get_totals(self, pump_id, nozzle=None, fuel_grade_id=None):
         return FakeModel({"Pump": pump_id, "Totals": []})
 
     def get_prices(self, pump_id):
@@ -73,14 +76,28 @@ class FakePumps:
         return {"Unlocked": pump_id}
 
 
+class FakeProbes:
+    def __init__(self, measurements=None):
+        self.measurements = measurements if measurements is not None else []
+
+    def get_all_measurements(self):
+        return [FakeModel(m) for m in self.measurements]
+
+
 class FakeClient:
     def __init__(self):
         self.pumps = FakePumps()
+        self.probes = FakeProbes()
         self.requests = []
+        self.send_response_packets: list = []
 
     def request_data(self, request_type, data=None):
         self.requests.append((request_type, data))
         return {"Accepted": True}
+
+    def send(self, packets):
+        self.requests.append(("send", packets))
+        return SimpleNamespace(packets=self.send_response_packets)
 
     def healthcheck(self):
         return {"ok": True, "datetime": {"DateTime": "2026-05-27T13:00:00"}}
@@ -151,6 +168,73 @@ def test_pump_status_endpoint():
 
     assert response.status_code == 200
     assert response.json()["data"] == {"Pump": 1, "Status": "PumpIdleStatus"}
+
+
+def test_status_all_populates_live_price_cache():
+    live_state.clear()
+    fake = FakeClient()
+    fake.send_response_packets = [
+        SimpleNamespace(
+            id=1,
+            type="PumpIdleStatus",
+            data={"Pump": 1, "NozzlePrices": [1.25, 1.69, 1.33, 1.44]},
+        )
+    ]
+    client = make_test_client(fake)
+
+    status_response = client.get("/pumps/status-all?pump_count=1")
+    assert status_response.status_code == 200
+
+    # /prices debe servir directo desde la caché poblada por status-all,
+    # sin llamar a client.pumps.get_prices (que devolvería otra forma de dato).
+    prices_response = client.get("/pumps/1/prices")
+    assert prices_response.status_code == 200
+    data = prices_response.json()["data"]
+    assert data["NozzlePrices"] == [1.25, 1.69, 1.33, 1.44]
+    assert data["_source"] == "live_cache"
+    live_state.clear()
+
+
+def test_prices_endpoint_falls_back_to_live_poll_when_cache_is_empty():
+    live_state.clear()
+    fake = FakeClient()
+    client = make_test_client(fake)
+
+    response = client.get("/pumps/1/prices")
+
+    assert response.status_code == 200
+    # FakePumps.get_prices() devuelve {"Pump": pump_id, "Prices": []} —
+    # distinto de la forma NozzlePrices de la caché, así confirmamos que
+    # se usó el camino en vivo y no un remanente de otra prueba.
+    assert response.json()["data"] == {"Pump": 1, "Prices": []}
+
+
+def test_live_state_endpoint_merges_pumps_and_tanks():
+    live_state.clear()
+    fake = FakeClient()
+    fake.send_response_packets = [
+        SimpleNamespace(
+            id=1,
+            type="PumpIdleStatus",
+            data={"Pump": 1, "NozzlePrices": [1.25, 1.69]},
+        )
+    ]
+    fake.probes = FakeProbes([{"Probe": 1, "ProductVolume": 15234.5, "Temperature": 21.3}])
+    client = make_test_client(fake)
+
+    response = client.get("/live/state?pump_count=1")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["pumps"][0]["pump"] == 1
+    assert data["pumps"][0]["nozzle_prices"] == [1.25, 1.69]
+    assert data["tanks"][0]["Probe"] == 1
+    assert data["tanks"][0]["ProductVolume"] == 15234.5
+
+    # El snapshot también deja la caché lista para /pumps/1/prices.
+    prices_response = client.get("/pumps/1/prices")
+    assert prices_response.json()["data"]["_source"] == "live_cache"
+    live_state.clear()
 
 
 def test_authorize_volume_endpoint_calls_sdk():

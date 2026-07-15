@@ -1,7 +1,12 @@
 import pytest
 
 from pts2_sdk import PTS2Client
-from pts2_sdk.exceptions import PTS2PacketError, PTS2ProtocolError, PTS2ValidationError
+from pts2_sdk.exceptions import (
+    PTS2PacketError,
+    PTS2ProtocolError,
+    PTS2TimeoutError,
+    PTS2ValidationError,
+)
 
 
 class FakeTransport:
@@ -140,7 +145,6 @@ def test_authorize_rejects_volume_and_amount_together():
         ("suspend", "PumpSuspend", {"Pump": 1}),
         ("resume", "PumpResume", {"Pump": 1}),
         ("close_transaction", "PumpCloseTransaction", {"Pump": 1}),
-        ("get_display_data", "PumpGetDisplayData", {"Pump": 1}),
         ("lock", "PumpLock", {"Pump": 1}),
         ("unlock", "PumpUnlock", {"Pump": 1}),
         ("emergency_stop_all", "PumpEmergencyStop", {"Pump": 0}),
@@ -165,6 +169,99 @@ def test_pump_pos_commands_build_expected_packets(method_name, expected_type, ex
     packet = client.transport.requests[0]["Packets"][0]
     assert packet["Type"] == expected_type
     assert packet["Data"] == expected_data
+
+
+def test_get_prices_polls_status_until_pump_prices_received():
+    # PumpGetPrices only confirms receipt; the actual prices arrive later on
+    # a PumpGetStatus poll as a PumpPrices packet.
+    client = make_client(
+        [
+            {
+                "Protocol": "jsonPTS",
+                "Packets": [{"Id": 1, "Type": "PumpGetPrices", "Message": "OK"}],
+            },
+            {
+                "Protocol": "jsonPTS",
+                "Packets": [
+                    {
+                        "Id": 2,
+                        "Type": "PumpPrices",
+                        "Data": {"Pump": 1, "Prices": [1.25, 1.69], "User": "admin"},
+                    }
+                ],
+            },
+        ]
+    )
+
+    result = client.pumps.get_prices(1, poll_interval=0)
+
+    assert result == {"Pump": 1, "NozzlePrices": [1.25, 1.69]}
+    requests = client.transport.requests
+    assert requests[0]["Packets"][0]["Type"] == "PumpGetPrices"
+    assert requests[1]["Packets"][0]["Type"] == "PumpGetStatus"
+
+
+def test_get_prices_times_out_when_pump_prices_never_arrives():
+    status_response = {
+        "Protocol": "jsonPTS",
+        "Packets": [{"Id": 2, "Type": "PumpIdleStatus", "Data": {"Pump": 1}}],
+    }
+    client = make_client(
+        [
+            {"Protocol": "jsonPTS", "Packets": [{"Id": 1, "Type": "PumpGetPrices", "Message": "OK"}]},
+            status_response,
+            status_response,
+        ]
+    )
+
+    with pytest.raises(PTS2TimeoutError):
+        client.pumps.get_prices(1, timeout=0, poll_interval=0)
+
+
+def test_get_totals_sends_default_nozzle_and_polls_status():
+    client = make_client(
+        [
+            {"Protocol": "jsonPTS", "Packets": [{"Id": 1, "Type": "PumpGetTotals", "Message": "OK"}]},
+            {
+                "Protocol": "jsonPTS",
+                "Packets": [
+                    {
+                        "Id": 2,
+                        "Type": "PumpTotals",
+                        "Data": {"Pump": 1, "Nozzle": 1, "Volume": 123.45, "Amount": 456.78},
+                    }
+                ],
+            },
+        ]
+    )
+
+    totals = client.pumps.get_totals(1, poll_interval=0)
+
+    assert client.transport.requests[0]["Packets"][0]["Data"] == {"Pump": 1, "Nozzle": 1}
+    assert totals.pump == 1
+    assert totals.to_dict()["Volume"] == 123.45
+
+
+def test_get_display_data_polls_status_until_received():
+    client = make_client(
+        [
+            {"Protocol": "jsonPTS", "Packets": [{"Id": 1, "Type": "PumpGetDisplayData", "Message": "OK"}]},
+            {
+                "Protocol": "jsonPTS",
+                "Packets": [
+                    {
+                        "Id": 2,
+                        "Type": "PumpDisplayData",
+                        "Data": {"Pump": 1, "Volume": 1.55, "Amount": 12.34},
+                    }
+                ],
+            },
+        ]
+    )
+
+    result = client.pumps.get_display_data(1, poll_interval=0)
+
+    assert result == {"Pump": 1, "Volume": 1.55, "Amount": 12.34}
 
 
 def test_packet_error_raises_sdk_exception():
