@@ -32,6 +32,8 @@ DEFAULT_SETTINGS = {
     "pts2_password": "admin",
     "remote_api_url": "https://api.gasnova.site/v1",
     "auto_authorize_on_nozzle_up": "false",
+    "auto_consolidate_enabled": "true",
+    "auto_consolidate_minutes": "5",
 }
 
 # Cambiar cualquiera de estas claves reconecta el cliente PTS-2 de inmediato,
@@ -63,6 +65,14 @@ def update_setting(key: str, update: SettingUpdate, request: Request, db: Sessio
     """Create or update a specific configuration parameter by key."""
     if key == "pts2_auth_type" and update.value.strip().lower() not in {"basic", "digest", "none"}:
         raise HTTPException(status_code=400, detail="pts2_auth_type debe ser 'basic', 'digest' o 'none'.")
+
+    if key == "auto_consolidate_minutes":
+        try:
+            minutes = float(update.value)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="auto_consolidate_minutes debe ser un número.")
+        if minutes <= 0:
+            raise HTTPException(status_code=400, detail="auto_consolidate_minutes debe ser mayor que 0.")
 
     setting = db.query(SystemSetting).filter(SystemSetting.key == key).first()
     if not setting:

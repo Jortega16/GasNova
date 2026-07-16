@@ -29,6 +29,8 @@ interface NozzleTransactionsModalProps {
     fuelType: FuelType,
     documentNumber?: string
   ) => NozzleTransaction;
+  autoConsolidateEnabled?: boolean;
+  autoConsolidateMinutes?: number;
 }
 
 const NozzleTransactionsModal: React.FC<NozzleTransactionsModalProps> = ({
@@ -44,6 +46,8 @@ const NozzleTransactionsModal: React.FC<NozzleTransactionsModalProps> = ({
   onProcessAllNozzleTrxs,
   onProcessSelectedNozzleTrxs,
   buildCombinedNozzleTransaction,
+  autoConsolidateEnabled = true,
+  autoConsolidateMinutes = 5,
 }) => {
   const [selectedTrx, setSelectedTrx] = useState<NozzleTransaction | null>(null);
   const [selectedTrxIds, setSelectedTrxIds] = useState<string[]>([]);
@@ -240,9 +244,10 @@ const NozzleTransactionsModal: React.FC<NozzleTransactionsModalProps> = ({
 
                       <div className="text-right">
                         <p className="text-xs font-black text-amber-400 font-mono">{currencySymbol}{tx.amount.toFixed(2)}</p>
-                        {(() => {
+                        {autoConsolidateEnabled && (() => {
                           const created = tx.createdAt || Date.now();
-                          const sLeft = Math.max(0, Math.ceil((300000 - (Date.now() - created)) / 1000));
+                          const thresholdMs = autoConsolidateMinutes * 60000;
+                          const sLeft = Math.max(0, Math.ceil((thresholdMs - (Date.now() - created)) / 1000));
                           const min = Math.floor(sLeft / 60);
                           const sec = sLeft % 60;
                           return (

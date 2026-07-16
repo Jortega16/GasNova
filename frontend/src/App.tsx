@@ -224,6 +224,16 @@ export default function App() {
     autoAuthorizeEnabledRef.current = systemSettings.autoAuthorizeOnNozzleUp;
   }, [systemSettings.autoAuthorizeOnNozzleUp]);
 
+  // Mismo patrón para el auto-consolidado de despachos pendientes: el
+  // intervalo de abajo se define una sola vez y necesita leer el valor
+  // vigente sin reiniciarse en cada cambio de ajuste.
+  const autoConsolidateEnabledRef = useRef<boolean>(systemSettings.autoConsolidateEnabled);
+  const autoConsolidateMinutesRef = useRef<number>(systemSettings.autoConsolidateMinutes);
+  useEffect(() => {
+    autoConsolidateEnabledRef.current = systemSettings.autoConsolidateEnabled;
+    autoConsolidateMinutesRef.current = systemSettings.autoConsolidateMinutes;
+  }, [systemSettings.autoConsolidateEnabled, systemSettings.autoConsolidateMinutes]);
+
   const unitMeasure = systemSettings.unitMeasure;
   const currencySymbol = systemSettings.currencySymbol;
   const stationCountry = systemSettings.stationCountry;
@@ -1866,10 +1876,14 @@ export default function App() {
     };
   }, [isSimulating]);
 
-  // 5-minute auto-consolidation logic per individual transaction
+  // Auto-consolidation logic per individual transaction — el umbral y si
+  // está activo se leen de los refs para no reiniciar el intervalo cada
+  // vez que el operador cambia el ajuste en Configuración.
   useEffect(() => {
     const checkInterval = setInterval(() => {
+      if (!autoConsolidateEnabledRef.current) return;
       const now = Date.now();
+      const thresholdMs = autoConsolidateMinutesRef.current * 60000;
       const expiredTransactions: NozzleTransaction[] = [];
 
       setDispensers(prev => {
@@ -1880,10 +1894,10 @@ export default function App() {
             const trxs = n.pendingTransactions || [];
             if (trxs.length === 0) return n;
 
-            // Filter out transactions that have been pending for >= 5 minutes (300 seconds)
+            // Filter out transactions that have been pending past the configured threshold
             const expiredInNozzle = trxs.filter(t => {
               const created = t.createdAt || now;
-              return now - created >= 300000; // 5 minutes in milliseconds
+              return now - created >= thresholdMs;
             });
 
             if (expiredInNozzle.length > 0) {
@@ -1941,7 +1955,7 @@ export default function App() {
             volume: `${pTx.volume.toFixed(1)} G`,
             amount: `$${pTx.amount.toFixed(2)}`,
             paymentType: 'Auto-Cons.',
-            message: `Despacho ${pTx.id} consolidado automáticamente (tiempo límite de 5 min por despacho superado).`,
+            message: `Despacho ${pTx.id} consolidado automáticamente (tiempo límite de ${autoConsolidateMinutesRef.current} min por despacho superado).`,
             isCustomNote: true
           };
           setAlerts(prev => [autoAlert, ...prev]);
@@ -3030,9 +3044,12 @@ export default function App() {
 
   // Find shortest remaining seconds for any pending transaction across all dispensers
   const getMinPendingTransactionTimeLeft = () => {
+    if (!systemSettings.autoConsolidateEnabled) return null;
+
     let minTimeLeftMs = Infinity;
     let shortestTrxId = '';
     const now = Date.now();
+    const thresholdMs = systemSettings.autoConsolidateMinutes * 60000;
     let totalPending = 0;
 
     dispensers.forEach(d => {
@@ -3042,7 +3059,7 @@ export default function App() {
           totalPending++;
           const cr = t.createdAt || now;
           const elapsed = now - cr;
-          const left = 300000 - elapsed;
+          const left = thresholdMs - elapsed;
           if (left < minTimeLeftMs) {
             minTimeLeftMs = left;
             shortestTrxId = t.id;
@@ -3104,6 +3121,7 @@ export default function App() {
         setIsSimulating={setIsSimulating}
         onManualSync={handleManualSync}
         pendingAutoConsolidationInfo={pendingAutoConsolidationInfo}
+        autoConsolidateMinutes={systemSettings.autoConsolidateMinutes}
         isApiOnline={isApiOnline}
         isPts2Online={isPts2Online}
       />
@@ -3136,6 +3154,8 @@ export default function App() {
         onProcessAllNozzleTrxs={handleProcessAllNozzleTrxs}
         onProcessSelectedNozzleTrxs={handleProcessSelectedNozzleTrxs}
         buildCombinedNozzleTransaction={buildCombinedNozzleTransaction}
+        autoConsolidateEnabled={systemSettings.autoConsolidateEnabled}
+        autoConsolidateMinutes={systemSettings.autoConsolidateMinutes}
       />
 
       <PreAuthDialog

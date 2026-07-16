@@ -13,17 +13,19 @@ interface FooterProps {
   setIsSimulating: (sim: boolean) => void;
   onManualSync: () => void;
   pendingAutoConsolidationInfo?: { shortestTrxId: string; secLeft: number; totalPending: number } | null;
+  autoConsolidateMinutes?: number;
   isApiOnline?: boolean;
   isPts2Online?: boolean;
 }
 
-export default function Footer({ 
-  shiftId, 
+export default function Footer({
+  shiftId,
   shiftName,
-  isSimulating, 
-  setIsSimulating, 
+  isSimulating,
+  setIsSimulating,
   onManualSync,
   pendingAutoConsolidationInfo,
+  autoConsolidateMinutes = 5,
   isApiOnline = false,
   isPts2Online = false
 }: FooterProps) {
@@ -90,7 +92,7 @@ export default function Footer({
         {pendingAutoConsolidationInfo && (
           <>
             <div className="h-4 w-px bg-[#44474e]" />
-            <div className="flex items-center gap-1.5 text-[#e2f1af]/90 font-sans" id="auto-consolidation-status" title="Cada despacho tiene un ciclo individual de 5 minutos antes de auto-consolidarse">
+            <div className="flex items-center gap-1.5 text-[#e2f1af]/90 font-sans" id="auto-consolidation-status" title={`Cada despacho tiene un ciclo individual de ${autoConsolidateMinutes} minuto${autoConsolidateMinutes === 1 ? '' : 's'} antes de auto-consolidarse`}>
               <span className="relative flex h-2 w-2 shrink-0">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>

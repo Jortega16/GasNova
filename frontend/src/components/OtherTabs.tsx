@@ -109,6 +109,10 @@ export default function OtherTabs({
   const [pts2Password, setPts2Password] = useState('admin');
   const [autoAuthorizeOnNozzleUp, setAutoAuthorizeOnNozzleUp] = useState(false);
   const [autoAuthorizeSaving, setAutoAuthorizeSaving] = useState(false);
+  const [autoConsolidateEnabled, setAutoConsolidateEnabled] = useState(true);
+  const [autoConsolidateMinutes, setAutoConsolidateMinutes] = useState(5);
+  const [autoConsolidateMinutesDraft, setAutoConsolidateMinutesDraft] = useState('5');
+  const [autoConsolidateSaving, setAutoConsolidateSaving] = useState(false);
   const [isTestingApi, setIsTestingApi] = useState(false);
   const [isTestingWs, setIsTestingWs] = useState(false);
 
@@ -253,6 +257,14 @@ export default function OtherTabs({
         if (data.pts2_password) setPts2Password(data.pts2_password);
         if (data.remote_api_url) setApiEndpoint(data.remote_api_url);
         setAutoAuthorizeOnNozzleUp(data.auto_authorize_on_nozzle_up === 'true');
+        setAutoConsolidateEnabled(data.auto_consolidate_enabled === 'true');
+        if (data.auto_consolidate_minutes) {
+          const parsed = parseFloat(data.auto_consolidate_minutes);
+          if (!isNaN(parsed) && parsed > 0) {
+            setAutoConsolidateMinutes(parsed);
+            setAutoConsolidateMinutesDraft(String(parsed));
+          }
+        }
       })
       .catch(() => {});
 
@@ -1163,6 +1175,129 @@ export default function OtherTabs({
 
               {autoAuthorizeSaving && (
                 <p className="text-[10px] text-slate-400 mt-2 text-center">Guardando modo de operación...</p>
+              )}
+            </div>
+
+            {/* Auto-consolidado de despachos pendientes */}
+            <div className="mt-4 bg-white border border-neutral-200 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-1">
+                <Clock className="w-4 h-4 text-[#355e9e]" />
+                <span className="font-sans font-bold text-sm text-slate-800">Auto-consolidado de Despachos Pendientes</span>
+              </div>
+              <p className="text-[11px] text-slate-500 mb-3">
+                Si un despacho queda en "Cobro Pendiente" sin que el cajero lo procese, el sistema lo factura automáticamente como Efectivo pasado el tiempo que definas aquí, para que no se acumulen ventas sin cerrar.
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                <button
+                  type="button"
+                  disabled={autoConsolidateSaving}
+                  onClick={async () => {
+                    if (autoConsolidateEnabled) return;
+                    setAutoConsolidateEnabled(true);
+                    setAutoConsolidateSaving(true);
+                    try {
+                      await api.updateSystemSetting('auto_consolidate_enabled', 'true');
+                      if (onSettingsChange) onSettingsChange();
+                    } finally {
+                      setAutoConsolidateSaving(false);
+                    }
+                  }}
+                  className={`text-left rounded-lg p-3 border-2 transition-all cursor-pointer disabled:opacity-50 ${
+                    autoConsolidateEnabled
+                      ? 'border-emerald-500 bg-emerald-50'
+                      : 'border-neutral-200 bg-slate-50 hover:border-neutral-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`font-bold text-xs ${autoConsolidateEnabled ? 'text-emerald-800' : 'text-slate-600'}`}>
+                      ✅ Activado
+                    </span>
+                    {autoConsolidateEnabled && (
+                      <span className="text-[9px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded uppercase">Actual</span>
+                    )}
+                  </div>
+                  <p className="text-[10.5px] text-slate-500 leading-relaxed">
+                    Los despachos pendientes se facturan solos como Efectivo si nadie los cobra a tiempo.
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={autoConsolidateSaving}
+                  onClick={async () => {
+                    if (!autoConsolidateEnabled) return;
+                    setAutoConsolidateEnabled(false);
+                    setAutoConsolidateSaving(true);
+                    try {
+                      await api.updateSystemSetting('auto_consolidate_enabled', 'false');
+                      if (onSettingsChange) onSettingsChange();
+                    } finally {
+                      setAutoConsolidateSaving(false);
+                    }
+                  }}
+                  className={`text-left rounded-lg p-3 border-2 transition-all cursor-pointer disabled:opacity-50 ${
+                    !autoConsolidateEnabled
+                      ? 'border-amber-500 bg-amber-50'
+                      : 'border-neutral-200 bg-slate-50 hover:border-neutral-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`font-bold text-xs ${!autoConsolidateEnabled ? 'text-amber-800' : 'text-slate-600'}`}>
+                      ⛔ Desactivado
+                    </span>
+                    {!autoConsolidateEnabled && (
+                      <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded uppercase">Actual</span>
+                    )}
+                  </div>
+                  <p className="text-[10.5px] text-slate-500 leading-relaxed">
+                    Los despachos quedan pendientes indefinidamente hasta que un cajero los procese a mano.
+                  </p>
+                </button>
+              </div>
+
+              <div className={`flex items-center gap-2 flex-wrap transition-opacity ${!autoConsolidateEnabled ? 'opacity-50' : ''}`}>
+                <label className="text-[11px] font-bold text-slate-600" htmlFor="auto-consolidate-minutes">
+                  Minutos antes de auto-consolidar:
+                </label>
+                <input
+                  id="auto-consolidate-minutes"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={autoConsolidateMinutesDraft}
+                  onChange={(e) => setAutoConsolidateMinutesDraft(e.target.value)}
+                  disabled={autoConsolidateSaving || !autoConsolidateEnabled}
+                  className="w-20 text-xs border border-neutral-300 rounded-lg px-2 py-1.5 font-mono"
+                />
+                <button
+                  type="button"
+                  disabled={autoConsolidateSaving || !autoConsolidateEnabled}
+                  onClick={async () => {
+                    const parsed = parseFloat(autoConsolidateMinutesDraft);
+                    if (isNaN(parsed) || parsed <= 0) return;
+                    setAutoConsolidateSaving(true);
+                    try {
+                      await api.updateSystemSetting('auto_consolidate_minutes', String(parsed));
+                      setAutoConsolidateMinutes(parsed);
+                      if (onSettingsChange) onSettingsChange();
+                    } finally {
+                      setAutoConsolidateSaving(false);
+                    }
+                  }}
+                  className="text-[11px] font-bold text-white bg-[#1b365d] hover:bg-[#284a7d] px-3 py-1.5 rounded-lg cursor-pointer disabled:opacity-50"
+                >
+                  Guardar
+                </button>
+                {autoConsolidateMinutesDraft !== String(autoConsolidateMinutes) &&
+                  !isNaN(parseFloat(autoConsolidateMinutesDraft)) &&
+                  parseFloat(autoConsolidateMinutesDraft) > 0 && (
+                    <span className="text-[10px] text-amber-600">Sin guardar</span>
+                  )}
+              </div>
+
+              {autoConsolidateSaving && (
+                <p className="text-[10px] text-slate-400 mt-2 text-center">Guardando...</p>
               )}
             </div>
           </div>

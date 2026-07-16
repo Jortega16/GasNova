@@ -12,6 +12,8 @@ export interface SystemSettings {
   stationCanton: string;
   stationDepartment: string;
   autoAuthorizeOnNozzleUp: boolean;
+  autoConsolidateEnabled: boolean;
+  autoConsolidateMinutes: number;
 }
 
 interface UseSystemSettingsReturn {
@@ -31,6 +33,8 @@ const DEFAULTS: SystemSettings = {
   stationCanton: '',
   stationDepartment: 'Guatemala',
   autoAuthorizeOnNozzleUp: false,
+  autoConsolidateEnabled: true,
+  autoConsolidateMinutes: 5,
 };
 
 const PRICE_KEY_MAP: Record<FuelType, string> = {
@@ -58,6 +62,11 @@ export function useSystemSettings(): UseSystemSettingsReturn {
         stationCanton: data.station_canton ?? DEFAULTS.stationCanton,
         stationDepartment: data.station_department ?? DEFAULTS.stationDepartment,
         autoAuthorizeOnNozzleUp: data.auto_authorize_on_nozzle_up === 'true',
+        autoConsolidateEnabled: data.auto_consolidate_enabled === 'true',
+        autoConsolidateMinutes: (() => {
+          const parsed = parseFloat(data.auto_consolidate_minutes);
+          return !isNaN(parsed) && parsed > 0 ? parsed : DEFAULTS.autoConsolidateMinutes;
+        })(),
       });
 
       setPrices(prev => prev.map(p => {
