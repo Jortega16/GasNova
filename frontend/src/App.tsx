@@ -767,7 +767,9 @@ export default function App() {
           return {
             ...d,
             nozzles: d.nozzles.map(n => {
-              if (n.fuelType === fuelType && n.status === 'Dispensing') {
+              if (n.fuelType !== fuelType) return n;
+
+              if (n.status === 'Dispensing') {
                 const finalAmount = n.currentAmount;
                 const finalVolume = n.currentVolume;
                 setTimeout(() => {
@@ -783,6 +785,22 @@ export default function App() {
                   limitAmount: undefined
                 };
               }
+
+              if (n.status === 'Prepaid') {
+                // Se autorizó pero nunca se apretó el gatillo: no hubo
+                // despacho real, así que no se genera venta — solo se
+                // cancela la autorización local.
+                return {
+                  ...n,
+                  status: 'Idle',
+                  currentAmount: 0.0,
+                  currentVolume: 0.0,
+                  progressPercent: 0,
+                  isPostpaid: false,
+                  limitAmount: undefined
+                };
+              }
+
               return n;
             })
           };
