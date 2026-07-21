@@ -51,7 +51,7 @@ if %errorlevel% neq 0 (
 
 echo.
 echo [INFO] Levantando los contenedores...
-docker compose up -d gasnova-db gasnova-backend gasnova-frontend gasnova-pgadmin
+docker compose up -d
 if %errorlevel% neq 0 (
     echo [ERROR] Fallo docker compose up.
     pause

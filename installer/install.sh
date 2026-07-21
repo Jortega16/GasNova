@@ -41,8 +41,7 @@ docker compose pull
 
 echo ""
 echo "▶ Levantando los contenedores..."
-# Core + pgAdmin. mDNS (solo Linux): docker compose --profile mdns up -d
-docker compose up -d gasnova-db gasnova-backend gasnova-frontend gasnova-pgadmin
+docker compose up -d
 
 echo ""
 echo "══════════════════════════════════════════════"

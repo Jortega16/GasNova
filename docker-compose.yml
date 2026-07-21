@@ -18,13 +18,8 @@ services:
       retries: 5
 
   # ── Backend FastAPI ──────────────────────────────────────────────────────────
-  # Con código local: docker compose up -d --build
-  # Solo imágenes remotas: docker compose pull && docker compose up -d
   gasnova-backend:
     image: ${BACKEND_IMAGE:-ghcr.io/jortega16/gasnova-backend:latest}
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
     container_name: gasnova-backend
     restart: unless-stopped
     environment:
@@ -42,12 +37,9 @@ services:
       gasnova-db:
         condition: service_healthy
 
-  # ── Frontend (nginx, HTTP only) ──────────────────────────────────────────────
+  # ── Frontend (nginx HTTP en la imagen — sin mounts ni build en prod) ─────────
   gasnova-frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/jortega16/gasnova-frontend:latest}
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
     container_name: gasnova-frontend
     restart: unless-stopped
     ports:
@@ -73,7 +65,7 @@ services:
     depends_on:
       - gasnova-db
 
-  # ── mDNS (opcional, solo Linux con host networking): --profile mdns ─────────
+  # ── mDNS (opcional, solo Linux): docker compose --profile mdns up -d ────────
   gasnova-mdns:
     profiles: ["mdns"]
     image: flungo/avahi
