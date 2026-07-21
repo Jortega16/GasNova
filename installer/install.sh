@@ -1,10 +1,9 @@
 #!/bin/bash
 # GasNova — instalación / actualización con un solo script.
 #
-# Descarga docker-compose.yml + nginx.conf desde el repositorio y levanta
-# (o actualiza) los contenedores. Correr este mismo script más adelante
-# actualiza la instalación existente sin perder datos (el volumen de
-# PostgreSQL persiste).
+# Descarga docker-compose.yml desde el repositorio y levanta (o actualiza)
+# los contenedores. Correr este mismo script más adelante actualiza la
+# instalación existente sin perder datos (el volumen de PostgreSQL persiste).
 #
 # Uso:
 #   bash install.sh
@@ -21,9 +20,8 @@ echo "  GasNova — Instalación / Actualización"
 echo "══════════════════════════════════════════════"
 
 echo ""
-echo "▶ Descargando docker-compose.yml y nginx.conf..."
+echo "▶ Descargando docker-compose.yml..."
 curl -fsSL "$REPO_RAW/docker-compose.yml" -o docker-compose.yml
-curl -fsSL "$REPO_RAW/nginx.conf" -o nginx.conf
 
 mkdir -p backend backend/logs backend/reports
 

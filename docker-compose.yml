@@ -38,14 +38,12 @@ services:
         condition: service_healthy
 
   # ── Frontend (nginx, HTTP only) ──────────────────────────────────────────────
-  # Si existe ./nginx.conf junto al compose, se monta encima de la imagen
-  # (sirve para forzar HTTP aunque ghcr.io aún tenga una imagen HTTPS antigua).
+  # La config HTTP va baked en la imagen (frontend/Dockerfile). En prod con
+  # código local: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
   gasnova-frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/jortega16/gasnova-frontend:latest}
     container_name: gasnova-frontend
     restart: unless-stopped
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "80:80"
     depends_on:
