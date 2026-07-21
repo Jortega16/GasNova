@@ -18,8 +18,13 @@ services:
       retries: 5
 
   # ── Backend FastAPI ──────────────────────────────────────────────────────────
+  # Con código local: docker compose up -d --build
+  # Solo imágenes remotas: docker compose pull && docker compose up -d
   gasnova-backend:
     image: ${BACKEND_IMAGE:-ghcr.io/jortega16/gasnova-backend:latest}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: gasnova-backend
     restart: unless-stopped
     environment:
@@ -38,10 +43,11 @@ services:
         condition: service_healthy
 
   # ── Frontend (nginx, HTTP only) ──────────────────────────────────────────────
-  # La config HTTP va baked en la imagen (frontend/Dockerfile). En prod con
-  # código local: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
   gasnova-frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/jortega16/gasnova-frontend:latest}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     container_name: gasnova-frontend
     restart: unless-stopped
     ports:
