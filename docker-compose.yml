@@ -37,26 +37,19 @@ services:
       gasnova-db:
         condition: service_healthy
 
-  # ── Frontend (nginx) ─────────────────────────────────────────────────────────
+  # ── Frontend (nginx HTTP en la imagen — sin mounts ni build en prod) ─────────
   gasnova-frontend:
     image: ${FRONTEND_IMAGE:-ghcr.io/jortega16/gasnova-frontend:latest}
     container_name: gasnova-frontend
     restart: unless-stopped
-    volumes:
-      # Sin ":ro" — si la carpeta está vacía, el contenedor genera un
-      # certificado autofirmado temporal aquí mismo al arrancar.
-      - ./certs:/etc/nginx/certs
     ports:
       - "80:80"
-      - "443:443"
     depends_on:
       - gasnova-backend
 
-  # ── pgAdmin: administración web de la base de datos (opcional) ──────────────
+  # ── pgAdmin: administración web de la base de datos ─────────────────────────
   # Acceso en http://localhost:5050 — al conectar un servidor nuevo dentro de
   # pgAdmin, usar host "gasnova-db", puerto 5432, usuario/clave de arriba.
-  # Para desactivar, comentar este servicio o hacer:
-  #   docker compose up -d --scale gasnova-pgadmin=0
   gasnova-pgadmin:
     image: dpage/pgadmin4:latest
     container_name: gasnova-pgadmin
@@ -72,12 +65,9 @@ services:
     depends_on:
       - gasnova-db
 
-  # ── mDNS: publica gasnova.local en la red local (solo hosts Linux) ─────────
-  # En Windows/macOS no es necesario: basta con renombrar la PC como "gasnova"
-  # (ambos sistemas resuelven <hostname>.local automáticamente vía mDNS).
-  # Para desactivar, comentar este servicio o hacer:
-  #   docker compose up -d --scale gasnova-mdns=0
+  # ── mDNS (opcional, solo Linux): docker compose --profile mdns up -d ────────
   gasnova-mdns:
+    profiles: ["mdns"]
     image: flungo/avahi
     container_name: gasnova-mdns
     restart: unless-stopped

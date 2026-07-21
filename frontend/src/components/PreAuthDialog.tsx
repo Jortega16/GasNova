@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Fuel, Check, Info } from "lucide-react";
 import type { FuelType, DispenserState, PriceConfig } from "../types";
 
@@ -31,6 +31,17 @@ export default function PreAuthDialog({
   const [mode, setMode] = useState<"Limit" | "Full">("Limit");
   const [limitType, setLimitType] = useState<"Amount" | "Volume">("Amount");
   const [amount, setAmount] = useState("20.00");
+
+  // El diálogo nunca se desmonta (solo renderiza null cuando está cerrado),
+  // así que sin esto el monto de la última pre-autorización quedaba pegado
+  // la próxima vez que se abre, incluso para otra cara/bomba.
+  useEffect(() => {
+    if (preauthorizingPumpId !== null) {
+      setMode("Limit");
+      setLimitType("Amount");
+      setAmount("20.00");
+    }
+  }, [preauthorizingPumpId]);
 
   if (preauthorizingPumpId === null) return null;
 
