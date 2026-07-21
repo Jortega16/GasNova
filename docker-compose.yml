@@ -49,9 +49,10 @@ services:
     depends_on:
       - gasnova-backend
 
-  # ── pgAdmin (opcional): docker compose --profile tools up -d ─────────────────
+  # ── pgAdmin: administración web de la base de datos ─────────────────────────
+  # Acceso en http://localhost:5050 — al conectar un servidor nuevo dentro de
+  # pgAdmin, usar host "gasnova-db", puerto 5432, usuario/clave de arriba.
   gasnova-pgadmin:
-    profiles: ["tools"]
     image: dpage/pgadmin4:latest
     container_name: gasnova-pgadmin
     restart: unless-stopped

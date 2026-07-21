@@ -50,8 +50,8 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [INFO] Levantando los contenedores (db + backend + frontend)...
-docker compose up -d gasnova-db gasnova-backend gasnova-frontend
+echo [INFO] Levantando los contenedores...
+docker compose up -d gasnova-db gasnova-backend gasnova-frontend gasnova-pgadmin
 if %errorlevel% neq 0 (
     echo [ERROR] Fallo docker compose up.
     pause
@@ -64,6 +64,6 @@ echo   GasNova instalado/actualizado correctamente
 echo.
 echo   Frontend:  http://localhost
 echo   Backend:   http://localhost:8002/docs
-echo   pgAdmin:   docker compose --profile tools up -d
+echo   pgAdmin:   http://localhost:5050
 echo ===================================================
 pause

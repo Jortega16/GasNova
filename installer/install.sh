@@ -40,9 +40,9 @@ echo "▶ Descargando la última versión de las imágenes..."
 docker compose pull
 
 echo ""
-echo "▶ Levantando los contenedores (db + backend + frontend)..."
-# Solo el stack core. pgAdmin: --profile tools | mDNS Linux: --profile mdns
-docker compose up -d gasnova-db gasnova-backend gasnova-frontend
+echo "▶ Levantando los contenedores..."
+# Core + pgAdmin. mDNS (solo Linux): docker compose --profile mdns up -d
+docker compose up -d gasnova-db gasnova-backend gasnova-frontend gasnova-pgadmin
 
 echo ""
 echo "══════════════════════════════════════════════"
@@ -50,5 +50,5 @@ echo "  ✓ GasNova instalado/actualizado correctamente"
 echo ""
 echo "  Frontend:  http://localhost"
 echo "  Backend:   http://localhost:8002/docs"
-echo "  pgAdmin:   docker compose --profile tools up -d"
+echo "  pgAdmin:   http://localhost:5050"
 echo "══════════════════════════════════════════════"
