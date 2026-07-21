@@ -15,8 +15,22 @@ const WS_RECONNECT_MAX_MS = 15000;
 
 function liveStateWsUrl(): string {
   const baseApiUrl = (import.meta as any).env.VITE_API_BASE_URL || 'http://localhost:8002';
-  const baseWsUrl = baseApiUrl.replace('http://', 'ws://').replace('https://', 'wss://');
-  return `${baseWsUrl}/ws/live-state`;
+  const isAbsolute = /^https?:\/\//.test(baseApiUrl);
+
+  // /ws/ vive en la raíz del sitio, proxiado aparte por nginx con los headers
+  // de upgrade — nunca bajo el prefijo de la API (/api/), aunque
+  // VITE_API_BASE_URL lo tenga (como en producción: VITE_API_BASE_URL=/api).
+  // Por eso no se deriva de baseApiUrl con un simple replace de esquema:
+  // en dev es una URL absoluta (http://localhost:8002, sin /api) y en
+  // producción es una ruta relativa (/api) que resolvería mal contra sí misma.
+  if (isAbsolute) {
+    const url = new URL(baseApiUrl);
+    const wsScheme = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${wsScheme}//${url.host}/ws/live-state`;
+  }
+
+  const wsScheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${wsScheme}//${window.location.host}/ws/live-state`;
 }
 
 /**
