@@ -1,9 +1,10 @@
 #!/bin/bash
 # GasNova — instalación / actualización con un solo script.
 #
-# Descarga docker-compose.yml desde el repositorio y levanta (o actualiza)
-# los contenedores. Correr este mismo script más adelante actualiza la
-# instalación existente sin perder datos (el volumen de PostgreSQL persiste).
+# Descarga docker-compose.yml + nginx.conf desde el repositorio y levanta
+# (o actualiza) los contenedores. Correr este mismo script más adelante
+# actualiza la instalación existente sin perder datos (el volumen de
+# PostgreSQL persiste).
 #
 # Uso:
 #   bash install.sh
@@ -20,8 +21,9 @@ echo "  GasNova — Instalación / Actualización"
 echo "══════════════════════════════════════════════"
 
 echo ""
-echo "▶ Descargando docker-compose.yml..."
+echo "▶ Descargando docker-compose.yml y nginx.conf..."
 curl -fsSL "$REPO_RAW/docker-compose.yml" -o docker-compose.yml
+curl -fsSL "$REPO_RAW/nginx.conf" -o nginx.conf
 
 mkdir -p backend backend/logs backend/reports
 
@@ -40,8 +42,9 @@ echo "▶ Descargando la última versión de las imágenes..."
 docker compose pull
 
 echo ""
-echo "▶ Levantando los contenedores..."
-docker compose up -d
+echo "▶ Levantando los contenedores (db + backend + frontend)..."
+# Solo el stack core. pgAdmin: --profile tools | mDNS Linux: --profile mdns
+docker compose up -d gasnova-db gasnova-backend gasnova-frontend
 
 echo ""
 echo "══════════════════════════════════════════════"
@@ -49,5 +52,5 @@ echo "  ✓ GasNova instalado/actualizado correctamente"
 echo ""
 echo "  Frontend:  http://localhost"
 echo "  Backend:   http://localhost:8002/docs"
-echo "  pgAdmin:   http://localhost:5050"
+echo "  pgAdmin:   docker compose --profile tools up -d"
 echo "══════════════════════════════════════════════"

@@ -1,9 +1,10 @@
 @echo off
 REM GasNova — instalacion / actualizacion con un solo script.
 REM
-REM Descarga docker-compose.yml desde el repositorio y levanta (o actualiza)
-REM los contenedores. Correr este mismo script mas adelante actualiza la
-REM instalacion existente sin perder datos (el volumen de PostgreSQL persiste).
+REM Descarga docker-compose.yml + nginx.conf desde el repositorio y levanta
+REM (o actualiza) los contenedores. Correr este mismo script mas adelante
+REM actualiza la instalacion existente sin perder datos (el volumen de
+REM PostgreSQL persiste).
 REM
 REM Uso: doble clic en install.bat, o desde cmd: install.bat
 REM
@@ -18,10 +19,16 @@ echo   GasNova - Instalacion / Actualizacion
 echo ===================================================
 
 echo.
-echo [INFO] Descargando docker-compose.yml...
+echo [INFO] Descargando docker-compose.yml y nginx.conf...
 curl -fsSL "%REPO_RAW%/docker-compose.yml" -o docker-compose.yml
 if %errorlevel% neq 0 (
     echo [ERROR] No se pudo descargar docker-compose.yml. Verifica tu conexion a internet.
+    pause
+    exit /b 1
+)
+curl -fsSL "%REPO_RAW%/nginx.conf" -o nginx.conf
+if %errorlevel% neq 0 (
+    echo [ERROR] No se pudo descargar nginx.conf. Verifica tu conexion a internet.
     pause
     exit /b 1
 )
@@ -50,8 +57,8 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [INFO] Levantando los contenedores...
-docker compose up -d
+echo [INFO] Levantando los contenedores (db + backend + frontend)...
+docker compose up -d gasnova-db gasnova-backend gasnova-frontend
 if %errorlevel% neq 0 (
     echo [ERROR] Fallo docker compose up.
     pause
@@ -64,6 +71,6 @@ echo   GasNova instalado/actualizado correctamente
 echo.
 echo   Frontend:  http://localhost
 echo   Backend:   http://localhost:8002/docs
-echo   pgAdmin:   http://localhost:5050
+echo   pgAdmin:   docker compose --profile tools up -d
 echo ===================================================
 pause
