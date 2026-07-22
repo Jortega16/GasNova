@@ -35,13 +35,25 @@ else
     echo "▶ backend/.env ya existe — se conserva tal cual."
 fi
 
+# En Linux, el host no anuncia el hostname "gasnova" por mDNS por sí solo
+# (a diferencia de Windows/macOS, donde basta con renombrar el equipo) —
+# para eso el compose trae el servicio gasnova-mdns (avahi), pero está
+# detrás de un profile para no correr un contenedor de red host/privileged
+# innecesario en otros sistemas operativos.
+COMPOSE_PROFILE_ARGS=()
+if [ "$(uname -s)" = "Linux" ]; then
+    echo ""
+    echo "▶ Linux detectado — se activará el anuncio mDNS de gasnova.local (gasnova-mdns/avahi)."
+    COMPOSE_PROFILE_ARGS=(--profile mdns)
+fi
+
 echo ""
 echo "▶ Descargando la última versión de las imágenes..."
-docker compose pull
+docker compose "${COMPOSE_PROFILE_ARGS[@]}" pull
 
 echo ""
 echo "▶ Levantando los contenedores..."
-docker compose up -d
+docker compose "${COMPOSE_PROFILE_ARGS[@]}" up -d
 
 echo ""
 echo "══════════════════════════════════════════════"

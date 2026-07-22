@@ -65,6 +65,8 @@ docker compose pull       # descarga la última versión de las imágenes
 docker compose up -d      # levanta db + backend + frontend
 ```
 
+En Linux, si quieres que la PC se anuncie como `gasnova.local` por mDNS (ver [sección siguiente](#acceder-como-httpgasnovalocal-en-la-red-local)), agrega `--profile mdns` a ambos comandos.
+
 Ese mismo comando sirve para actualizar más adelante.
 
 - Frontend: `http://localhost` (redirige a `https://localhost` — ver sección HTTPS)
@@ -72,12 +74,19 @@ Ese mismo comando sirve para actualizar más adelante.
 
 ### Acceder como `http://gasnova.local` en la red local
 
-`gasnova.local` es un nombre mDNS que resuelve el sistema operativo, no algo que se configure dentro de Docker. Dos formas de habilitarlo:
+`gasnova.local` es un nombre mDNS que resuelve el sistema operativo, no algo que se configure dentro de Docker. Hay dos partes: que la PC que corre GasNova **se anuncie** con ese nombre, y que los demás dispositivos **lo resuelvan**.
 
-- **Windows / macOS (recomendado, sin tocar Docker):** renombrar la PC como `gasnova` en la configuración del equipo. Ambos sistemas traen resolución mDNS nativa y responden automáticamente en `gasnova.local` a cualquier otro dispositivo de la misma red.
-- **Linux:** el `docker-compose.yml` incluye el servicio `gasnova-mdns` (imagen `flungo/avahi`, `network_mode: host`) que anuncia el hostname `gasnova` por mDNS. Se levanta automáticamente con `docker compose up -d`; para desactivarlo, comentar el servicio en `docker-compose.yml`.
+**Anunciar el nombre (en la PC que corre GasNova):**
 
-Solo funciona dentro de la misma red local (no es un dominio público) y requiere que los dispositivos que acceden tengan soporte mDNS/Bonjour (Windows, macOS y la mayoría de móviles ya lo traen).
+- **Windows / macOS (recomendado, sin tocar Docker):** renombrar la PC como `gasnova` en la configuración del equipo. macOS anuncia `gasnova.local` de inmediato (Bonjour nativo). Windows normalmente también funciona solo en versiones recientes (10/11); si no, instalar **Bonjour Print Services** (gratis, de Apple) lo resuelve de forma confiable.
+- **Linux:** el host no anuncia su propio nombre por mDNS solo por tener Docker corriendo — para eso el `docker-compose.yml` incluye el servicio `gasnova-mdns` (imagen `flungo/avahi`, `network_mode: host`), detrás de un profile (`mdns`) para no correr un contenedor privilegiado/de red host innecesario en otros sistemas. `installer/install.sh` lo detecta y activa solo en Linux (`docker compose --profile mdns up -d`); si haces la instalación manual en Linux, agrega ese flag tú mismo. Para desactivarlo, comentar el servicio en `docker-compose.yml`.
+
+**Resolver el nombre (en cada dispositivo que accede):**
+
+- **Windows / macOS / Android / iOS:** normalmente funciona sin instalar nada. Si Windows no resuelve `gasnova.local`, instalar **Bonjour Print Services**.
+- **Linux:** los escritorios (Ubuntu, Fedora, etc.) ya traen `avahi-daemon` + `libnss-mdns`. En instalaciones mínimas o de servidor: `sudo apt install avahi-daemon libnss-mdns` (o el equivalente de la distro).
+
+Solo funciona dentro de la misma red local (no es un dominio público).
 
 ### HTTPS para `gasnova.local`
 
