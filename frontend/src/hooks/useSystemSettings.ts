@@ -45,6 +45,14 @@ const PRICE_KEY_MAP: Record<FuelType, string> = {
   'LPG': 'price_lpg',
 };
 
+const NAME_KEY_MAP: Record<FuelType, string> = {
+  'Regular Unleaded': 'fuel_name_regular_unleaded',
+  'Premium Unleaded': 'fuel_name_premium_unleaded',
+  'Diesel': 'fuel_name_diesel',
+  'Kerosene': 'fuel_name_kerosene',
+  'LPG': 'fuel_name_lpg',
+};
+
 export function useSystemSettings(): UseSystemSettingsReturn {
   const [settings, setSettings] = useState<SystemSettings>(DEFAULTS);
   const [prices, setPrices] = useState<PriceConfig[]>(INITIAL_PRICES);
@@ -69,16 +77,26 @@ export function useSystemSettings(): UseSystemSettingsReturn {
         })(),
       });
 
-      setPrices(prev => prev.map(p => {
-        const key = PRICE_KEY_MAP[p.fuelType];
-        if (key && data[key]) {
-          const parsed = parseFloat(data[key]);
-          if (!isNaN(parsed) && parsed > 0) {
-            return { ...p, price: parsed };
+      setPrices(prev => {
+        const byFuel = new Map(prev.map(p => [p.fuelType, p]));
+        (Object.keys(PRICE_KEY_MAP) as FuelType[]).forEach((fuelType) => {
+          const priceKey = PRICE_KEY_MAP[fuelType];
+          const nameKey = NAME_KEY_MAP[fuelType];
+          const parsed = priceKey && data[priceKey] ? parseFloat(data[priceKey]) : NaN;
+          const ptsName = nameKey && data[nameKey] ? String(data[nameKey]).trim() : '';
+          const existing = byFuel.get(fuelType);
+          if ((!isNaN(parsed) && parsed > 0) || ptsName) {
+            byFuel.set(fuelType, {
+              fuelType,
+              price: !isNaN(parsed) && parsed > 0 ? parsed : (existing?.price ?? 0),
+              name: ptsName || existing?.name,
+              lastUpdated: existing?.lastUpdated ?? 'PTS-2',
+            });
           }
-        }
-        return p;
-      }));
+        });
+        const order: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene', 'LPG'];
+        return order.filter(ft => byFuel.has(ft)).map(ft => byFuel.get(ft)!);
+      });
     });
   };
 

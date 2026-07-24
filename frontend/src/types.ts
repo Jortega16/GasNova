@@ -65,6 +65,8 @@ export interface TankState {
 
 export interface PriceConfig {
   fuelType: FuelType;
+  /** Nombre asignado en el PTS-2 (GetFuelGradesConfiguration.Name). */
+  name?: string;
   price: number;
   lastUpdated: string;
 }

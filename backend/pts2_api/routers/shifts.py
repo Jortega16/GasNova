@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..dependencies import get_pts2_client
-from ..models import Shift, PumpTransaction, SystemSetting, PendingTransaction, ShiftClosure
+from ..models import Shift, PumpTransaction, PendingTransaction, ShiftClosure
 from ..schemas import CommandResponse, ShiftCreate, ShiftResponse
 from ..transaction_store import build_shift_closure_totals, serialize_pending_transaction
 
@@ -191,12 +191,8 @@ def close_shift(
 
 @router.get("/{shift_id}/transactions", response_model=CommandResponse, summary="List transactions for a shift")
 def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> CommandResponse:
-    """Get the list of transactions associated with a specific shift, converting units conditionally."""
+    """Lista transacciones del turno (volumen tal cual; sin conversión Gal↔L)."""
     transactions = db.query(PumpTransaction).filter(PumpTransaction.shift_id == shift_id).all()
-    
-    # Check unit_measure setting
-    unit_setting = db.query(SystemSetting).filter(SystemSetting.key == "unit_measure").first()
-    unit_measure = unit_setting.value if unit_setting else "Litros"
     
     fuel_grades = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene']
     
@@ -215,11 +211,8 @@ def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> Com
         if not fuel_type:
             fuel_type = fuel_grades[nozzle - 1] if 1 <= nozzle <= len(fuel_grades) else 'Regular Unleaded'
         
-        # Convert volume from liters back to gallons only if unit_measure is set to Galones
         volume_val = t.volume or 0.0
-        if unit_measure == "Galones":
-            volume_val = volume_val / 3.78541
-        
+
         # Format date time
         date_str = t.created_at.strftime("%Y-%m-%d %I:%M %p") if t.created_at else "N/A"
         

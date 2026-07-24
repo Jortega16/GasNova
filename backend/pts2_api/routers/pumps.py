@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Path, Query, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from pts2_sdk import PTS2Client
 
@@ -657,14 +657,79 @@ def pump_close_transaction(
         _close(client)
 
 
+def _default_nozzles(count: int) -> list[dict]:
+    defaults = [
+        "Regular Unleaded",
+        "Premium Unleaded",
+        "Diesel",
+        "Kerosene",
+        "LPG",
+    ]
+    n = max(1, int(count or 1))
+    out: list[dict] = []
+    for i in range(n):
+        fuel = defaults[i] if i < len(defaults) else "Regular Unleaded"
+        out.append({
+            "nozzle": i + 1,
+            "fuel_grade_id": i + 1,
+            "fuel_type": fuel,
+            "name": fuel,
+        })
+    return out
+
+
+def _normalize_nozzles(raw: list | None, count: int | None = None) -> list[dict]:
+    if not isinstance(raw, list) or len(raw) == 0:
+        return _default_nozzles(count or 1)
+    out: list[dict] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        fuel_type = str(item.get("fuel_type") or item.get("fuelType") or "Regular Unleaded")
+        name = str(item.get("name") or fuel_type)
+        fuel_grade_id = int(item.get("fuel_grade_id") or item.get("fuelGradeId") or (i + 1))
+        nozzle = int(item.get("nozzle") or (i + 1))
+        out.append({
+            "nozzle": nozzle,
+            "fuel_grade_id": fuel_grade_id,
+            "fuel_type": fuel_type,
+            "name": name,
+        })
+    return out or _default_nozzles(count or 1)
+
+
+def _serialize_pump_config(c: PumpConfiguration) -> dict:
+    nozzles = _normalize_nozzles(c.nozzles_json, c.nozzles_count)
+    return {
+        "id": c.pump_id,
+        "name": c.pump_name,
+        "nozzles_count": c.nozzles_count or len(nozzles),
+        "status": c.status,
+        "location": c.location,
+        "nozzles": nozzles,
+    }
+
+
 def seed_pumps_if_empty(db: Session) -> None:
     """Prepopulate database with default pump configuration if empty."""
     if db.query(PumpConfiguration).count() == 0:
         initial_pumps = [
-            PumpConfiguration(pump_id=1, pump_name="Cara 1", nozzles_count=3, status="active"),
-            PumpConfiguration(pump_id=2, pump_name="Cara 2", nozzles_count=3, status="active"),
-            PumpConfiguration(pump_id=3, pump_name="Cara 3", nozzles_count=3, status="active"),
-            PumpConfiguration(pump_id=4, pump_name="Cara 4", nozzles_count=3, status="active"),
+            PumpConfiguration(
+                pump_id=1, pump_name="Cara 1", nozzles_count=3, status="active",
+                nozzles_json=_default_nozzles(3),
+            ),
+            PumpConfiguration(
+                pump_id=2, pump_name="Cara 2", nozzles_count=3, status="active",
+                nozzles_json=_default_nozzles(3),
+            ),
+            PumpConfiguration(
+                pump_id=3, pump_name="Cara 3", nozzles_count=3, status="active",
+                nozzles_json=_default_nozzles(3),
+            ),
+            PumpConfiguration(
+                pump_id=4, pump_name="Cara 4", nozzles_count=3, status="active",
+                nozzles_json=_default_nozzles(3),
+            ),
         ]
         db.add_all(initial_pumps)
         db.commit()
@@ -674,62 +739,76 @@ def seed_pumps_if_empty(db: Session) -> None:
     "/configuration",
     response_model=CommandResponse,
     summary="Obtener configuración de bombas",
-    description="Retorna la lista de bombas configuradas en la base de datos local y realiza la precarga inicial si está vacía.",
+    description="Retorna la lista de bombas configuradas en la base de datos local (incluye mapeo de mangueras) y realiza la precarga inicial si está vacía.",
 )
 def get_pumps_configuration(db: Session = Depends(get_db)) -> CommandResponse:
     """Obtiene la configuración de los surtidores de la base de datos."""
     seed_pumps_if_empty(db)
     configs = db.query(PumpConfiguration).order_by(PumpConfiguration.pump_id).all()
-    serialized = [
-        {
-            "id": c.pump_id,
-            "name": c.pump_name,
-            "nozzles_count": c.nozzles_count,
-            "status": c.status,
-            "location": c.location,
-        }
-        for c in configs
-    ]
+    serialized = [_serialize_pump_config(c) for c in configs]
     return CommandResponse(data=serialized)
+
+
+class NozzleMappingItem(BaseModel):
+    nozzle: int = 1
+    fuel_grade_id: int = Field(default=1, alias="fuelGradeId")
+    fuel_type: str = Field(default="Regular Unleaded", alias="fuelType")
+    name: str | None = None
+
+    model_config = {"populate_by_name": True}
 
 
 class LocalPumpConfigCreate(BaseModel):
     pumpId: int
     name: str
     nozzlesCount: int = 1
+    nozzles: list[NozzleMappingItem] | None = None
 
 
 @router.post(
     "/local-configuration",
     response_model=CommandResponse,
     summary="Guardar o actualizar configuración local de bomba",
-    description="Persiste nombre y cantidad de mangueras en la BD local. Complementa al endpoint /configuration/pumps que actúa sobre el PTS-2.",
+    description=(
+        "Persiste nombre, cantidad de mangueras y el mapeo nozzle→combustible en la BD local. "
+        "Complementa al endpoint /configuration/pumps que actúa sobre el PTS-2."
+    ),
 )
 def save_local_pump_configuration(
     request: LocalPumpConfigCreate,
     db: Session = Depends(get_db),
 ) -> CommandResponse:
     """Crea o actualiza el registro de PumpConfiguration en la BD local."""
+    nozzles_payload = None
+    if request.nozzles is not None:
+        nozzles_payload = _normalize_nozzles(
+            [n.model_dump(by_alias=False) for n in request.nozzles],
+            request.nozzlesCount,
+        )
+        nozzles_count = len(nozzles_payload)
+    else:
+        nozzles_count = request.nozzlesCount
+
     existing = db.query(PumpConfiguration).filter(PumpConfiguration.pump_id == request.pumpId).first()
     if existing:
         existing.pump_name = request.name
-        existing.nozzles_count = request.nozzlesCount
+        existing.nozzles_count = nozzles_count
+        if nozzles_payload is not None:
+            existing.nozzles_json = nozzles_payload
+        elif not existing.nozzles_json:
+            existing.nozzles_json = _default_nozzles(nozzles_count)
     else:
         existing = PumpConfiguration(
             pump_id=request.pumpId,
             pump_name=request.name,
-            nozzles_count=request.nozzlesCount,
+            nozzles_count=nozzles_count,
             status="active",
+            nozzles_json=nozzles_payload or _default_nozzles(nozzles_count),
         )
         db.add(existing)
     db.commit()
     db.refresh(existing)
-    return CommandResponse(data={
-        "id": existing.pump_id,
-        "name": existing.pump_name,
-        "nozzles_count": existing.nozzles_count,
-        "status": existing.status,
-    })
+    return CommandResponse(data=_serialize_pump_config(existing))
 
 
 @router.get(

@@ -40,11 +40,29 @@ fi
 # para eso el compose trae el servicio gasnova-mdns (avahi), pero está
 # detrás de un profile para no correr un contenedor de red host/privileged
 # innecesario en otros sistemas operativos.
+#
+# WSL2 (Docker Desktop en Windows, o Docker Engine corriendo dentro de una
+# distro WSL) también reporta "Linux" en uname -s, pero su network_mode:
+# host es la red virtual de la VM de WSL2, no la tarjeta de red física de
+# la PC — el contenedor arranca sin error pero nunca llega a la LAN real.
+# Ahí, igual que en Windows nativo, la forma que sí funciona es renombrar
+# la PC como "gasnova" desde Configuración (ver README).
 COMPOSE_PROFILE_ARGS=()
-if [ "$(uname -s)" = "Linux" ]; then
+if [ "$(uname -s)" = "Linux" ] && ! uname -r | grep -qi microsoft; then
     echo ""
     echo "▶ Linux detectado — se activará el anuncio mDNS de gasnova.local (gasnova-mdns/avahi)."
     COMPOSE_PROFILE_ARGS=(--profile mdns)
+elif [ "$(uname -s)" = "Linux" ]; then
+    echo ""
+    echo "▶ WSL2 detectado (Docker Desktop en Windows) — gasnova-mdns no sirve aquí, su red host es la VM interna de WSL2, no la red física."
+    echo "  Para que esta PC responda en gasnova.local, renómbrala como \"gasnova\" desde Configuración de Windows (no dentro de WSL)."
+    # Si una instalación previa (con un install.sh más viejo) llegó a activar
+    # el profile mdns aquí, ese contenedor quedó con restart: unless-stopped
+    # — simplemente no volver a pasar --profile mdns en "up" no lo detiene,
+    # Compose ignora los servicios de profiles inactivos en vez de pararlos.
+    if docker compose rm -sf gasnova-mdns >/dev/null 2>&1; then
+        echo "  Se detuvo gasnova-mdns (había quedado activo de una instalación anterior)."
+    fi
 fi
 
 echo ""

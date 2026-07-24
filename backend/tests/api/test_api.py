@@ -93,6 +93,24 @@ class FakeClient:
 
     def request_data(self, request_type, data=None):
         self.requests.append((request_type, data))
+        if request_type == "GetFuelGradesConfiguration":
+            return {
+                "FuelGrades": [
+                    {"Id": 1, "Name": "Regular Unleaded", "Price": 4.0},
+                    {"Id": 2, "Name": "Premium Unleaded", "Price": 4.5},
+                    {"Id": 3, "Name": "Diesel", "Price": 4.2},
+                    {"Id": 4, "Name": "GLP", "Price": 3.0},
+                ]
+            }
+        if request_type == "GetPumpNozzlesConfiguration":
+            return {
+                "PumpNozzles": [
+                    {"PumpId": 1, "FuelGradeIds": [1, 2, 3]},
+                    {"PumpId": 2, "FuelGradeIds": [1, 2, 3]},
+                ]
+            }
+        if request_type == "SetFuelGradesPrices":
+            return {"Accepted": True}
         return {"Accepted": True}
 
     def send(self, packets):

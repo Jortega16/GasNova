@@ -1,21 +1,18 @@
-/** Factor de conversión exacto: 1 galón US = 3.78541 litros */
-const GAL_TO_L = 3.78541;
-
+/** Unidad de visualización de la estación (solo etiqueta). */
 export type UnitMeasure = 'Litros' | 'Galones';
 
 /**
- * Convierte un volumen almacenado en litros a la unidad de la estación.
- * La DB siempre guarda litros; el frontend muestra según configuración.
+ * El volumen se muestra tal cual (sin conversión Gal↔L).
+ * La etiqueta `unit_measure` solo cambia el texto (L / Gal).
+ * Cualquier conversión real debe hacerse en el backend/PTS, no en el UI.
  */
-export function litersToDisplay(liters: number, unit: UnitMeasure): number {
-  return unit === 'Galones' ? liters / GAL_TO_L : liters;
+export function litersToDisplay(value: number, _unit: UnitMeasure): number {
+  return value;
 }
 
-/**
- * Convierte un volumen en la unidad de la estación a litros para guardar en DB.
- */
-export function displayToLiters(value: number, unit: UnitMeasure): number {
-  return unit === 'Galones' ? value * GAL_TO_L : value;
+/** Identidad: el valor de UI se envía tal cual al backend. */
+export function displayToLiters(value: number, _unit: UnitMeasure): number {
+  return value;
 }
 
 /** Etiqueta corta de la unidad actual. */
@@ -23,7 +20,7 @@ export function unitLabel(unit: UnitMeasure): string {
   return unit === 'Galones' ? 'Gal' : 'L';
 }
 
-/** Formatea un volumen con 2 decimales y la unidad correcta. */
-export function formatVolume(liters: number, unit: UnitMeasure): string {
-  return `${litersToDisplay(liters, unit).toFixed(2)} ${unitLabel(unit)}`;
+/** Formatea un volumen con 2 decimales y la unidad correcta (sin convertir). */
+export function formatVolume(value: number, unit: UnitMeasure): string {
+  return `${Number(value).toFixed(2)} ${unitLabel(unit)}`;
 }

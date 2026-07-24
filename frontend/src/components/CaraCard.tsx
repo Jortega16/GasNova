@@ -106,7 +106,7 @@ const CARD_STATE = {
     glow: '',
     accent: 'from-slate-600/30 to-transparent',
     badge: 'bg-slate-800/60 text-slate-500 border-slate-700/30',
-    badgeText: 'EN ESPERA',
+    badgeText: 'EN REPOSO',
     ledBg: 'bg-[#070b0f]',
     ledValue: '#166534',
     ledDim: '#0d2015',
@@ -137,12 +137,14 @@ export default function CaraCard({
   const [isEditing, setIsEditing] = useState(false);
   const [editNozzles, setEditNozzles] = useState<NozzleState[]>([]);
 
-  const isDispensing = dispenser.nozzles.some(n => n.status === 'Dispensing');
-  const isAnyUnpaid  = dispenser.nozzles.some(n => n.status === 'Unpaid' || n.status === 'EndOfTransaction');
+  const isDispensing = dispenser.nozzles.some(n => n.status === 'Dispensing' || n.status === 'Fueling');
+  const isAnyReady   = dispenser.nozzles.some(n => n.status === 'Ready');
+  const isAnyEot     = dispenser.nozzles.some(n => n.status === 'EndOfTransaction');
+  const isAnyUnpaid  = dispenser.nozzles.some(n => n.status === 'Unpaid');
   const isAnyPrepaid = dispenser.nozzles.some(n => n.status === 'Prepaid' || n.status === 'Authorized');
   const isAnyOffline = dispenser.nozzles.some(n => n.status === 'Offline');
   const activeNozzle = dispenser.nozzles.find(n =>
-    ['Dispensing', 'Prepaid', 'Authorized', 'Unpaid', 'EndOfTransaction'].includes(n.status)
+    ['Dispensing', 'Fueling', 'Ready', 'Prepaid', 'Authorized', 'Unpaid', 'EndOfTransaction'].includes(n.status)
   );
   const totalPending = dispenser.nozzles.reduce((s, n) => s + (n.pendingTransactions?.length || 0), 0);
   const firstPending = dispenser.nozzles.find(n => (n.pendingTransactions?.length || 0) > 0);
@@ -150,13 +152,15 @@ export default function CaraCard({
   const displayNozzle = activeNozzle || dispenser.nozzles[0];
   const displayAmount = displayNozzle?.currentAmount || 0;
   const rawVol = displayNozzle?.currentVolume || 0;
-  const displayVolume = unitMeasure === 'Galones' ? rawVol / 3.78541 : rawVol;
+  const displayVolume = rawVol;
   const basePrice = activePrices[displayNozzle?.fuelType || 'Regular Unleaded'] || 4.19;
-  const displayPrice = unitMeasure === 'Galones' ? basePrice * 3.78541 : basePrice;
+  const displayPrice = basePrice;
 
   const state = dispenser.isBlocked ? CARD_STATE.blocked :
                 isDispensing        ? CARD_STATE.dispensing :
+                isAnyEot            ? CARD_STATE.unpaid :
                 isAnyUnpaid         ? CARD_STATE.unpaid :
+                isAnyReady          ? CARD_STATE.prepaid :
                 isAnyPrepaid        ? CARD_STATE.prepaid :
                                       CARD_STATE.idle;
 
@@ -245,16 +249,16 @@ export default function CaraCard({
         <div className="flex items-center gap-2">
           {/* Pulse indicator */}
           <div className="relative flex items-center justify-center">
-            {(isDispensing || isAnyUnpaid || isAnyPrepaid) && (
+            {(isDispensing || isAnyUnpaid || isAnyEot || isAnyPrepaid || isAnyReady) && (
               <span className={`absolute inline-flex w-4 h-4 rounded-full opacity-40 animate-ping ${
-                isDispensing ? 'bg-green-400' : isAnyUnpaid ? 'bg-rose-400' : 'bg-amber-400'
+                isDispensing ? 'bg-green-400' : (isAnyEot || isAnyUnpaid) ? 'bg-rose-400' : 'bg-amber-400'
               }`} />
             )}
             <span className={`relative w-2.5 h-2.5 rounded-full ${
               dispenser.isBlocked ? 'bg-red-500' :
               isDispensing        ? 'bg-green-400' :
-              isAnyUnpaid         ? 'bg-rose-400' :
-              isAnyPrepaid        ? 'bg-amber-400' :
+              isAnyEot || isAnyUnpaid ? 'bg-rose-400' :
+              isAnyReady || isAnyPrepaid ? 'bg-amber-400' :
               isAnyOffline        ? 'bg-slate-700' :
                                     'bg-slate-600'
             }`} />
@@ -366,15 +370,17 @@ export default function CaraCard({
 
         {/* Status badge */}
         <div className={`mx-2 mb-2 rounded-lg border py-1 text-center text-[9px] font-mono font-bold uppercase tracking-widest ${state.badge} ${
-          isDispensing || isAnyUnpaid ? 'animate-pulse' : ''
+          isDispensing || isAnyUnpaid || isAnyEot || isAnyReady ? 'animate-pulse' : ''
         }`}>
           {dispenser.isBlocked  ? '⛔ BLOQUEADA' :
            isDispensing         ? '⛽ DESPACHANDO' :
+           isAnyEot             ? '⏸ FIN DESPACHO' :
            isAnyUnpaid          ? '💳 COBRO PENDIENTE' :
+           isAnyReady           ? '🖐 MANGUERA LEVANTADA' :
            isAnyPrepaid         ? '✓ AUTORIZADA' :
            isAnyOffline         ? '📡 SIN SEÑAL' :
            totalPending > 0     ? `💳 ${totalPending} PEND.` :
-                                  '○ EN ESPERA'}
+                                  '○ EN REPOSO'}
         </div>
       </div>
 
@@ -396,11 +402,13 @@ export default function CaraCard({
             const cfg = NOZZLE_CFG[nozzle.fuelType];
             const price = activePrices[nozzle.fuelType] || 4.19;
             const lockedByOther = !!(activeNozzle && activeNozzle.fuelType !== nozzle.fuelType);
-            const isNozzleDisp    = nozzle.status === 'Dispensing';
+            const isNozzleDisp    = nozzle.status === 'Dispensing' || nozzle.status === 'Fueling';
             const isNozzlePrep    = nozzle.status === 'Prepaid' || nozzle.status === 'Authorized';
-            const isNozzleUnpaid  = nozzle.status === 'Unpaid' || nozzle.status === 'EndOfTransaction';
+            const isNozzleEot     = nozzle.status === 'EndOfTransaction';
+            const isNozzleUnpaid  = nozzle.status === 'Unpaid';
+            const isNozzleReady   = nozzle.status === 'Ready';
             const isNozzleBlock   = nozzle.status === 'Blocked';
-            const isNozzleIdle    = nozzle.status === 'Idle' || nozzle.status === 'Ready';
+            const isNozzleIdle    = nozzle.status === 'Idle';
             const isNozzleOffline = nozzle.status === 'Offline';
             const hasPending      = (nozzle.pendingTransactions?.length || 0) > 0;
 
@@ -411,7 +419,9 @@ export default function CaraCard({
                   lockedByOther    ? 'opacity-25 border-transparent bg-transparent' :
                   isNozzleOffline  ? 'opacity-30 border-slate-800/30 bg-slate-900/20' :
                   isNozzleDisp     ? `${cfg.bg} ${cfg.border}` :
+                  isNozzleEot      ? 'border-rose-600/30 bg-rose-950/20' :
                   isNozzleUnpaid   ? 'border-rose-600/30 bg-rose-950/20' :
+                  isNozzleReady    ? 'border-amber-500/40 bg-amber-950/25' :
                   isNozzlePrep     ? `${cfg.bg} ${cfg.border}` :
                   isNozzleBlock    ? 'border-red-900/30 bg-red-950/15' :
                   hasPending       ? 'border-rose-600/15 bg-rose-950/10' :
@@ -442,9 +452,14 @@ export default function CaraCard({
                     </span>
                   </div>
                   {/* Live amount while active */}
-                  {(isNozzleDisp || isNozzleUnpaid) && (
-                    <div className={`text-[10px] font-mono font-bold ${isNozzleUnpaid ? 'text-rose-400' : 'text-green-400'}`}>
-                      {currencySymbol}{nozzle.currentAmount.toFixed(2)} · {(unitMeasure === 'Galones' ? nozzle.currentVolume / 3.78541 : nozzle.currentVolume).toFixed(3)} {unitMeasure === 'Litros' ? 'L' : 'G'}
+                  {(isNozzleDisp || isNozzleUnpaid || isNozzleEot) && (
+                    <div className={`text-[10px] font-mono font-bold ${isNozzleUnpaid || isNozzleEot ? 'text-rose-400' : 'text-green-400'}`}>
+                      {currencySymbol}{nozzle.currentAmount.toFixed(2)} · {nozzle.currentVolume.toFixed(3)} {unitMeasure === 'Litros' ? 'L' : 'G'}
+                    </div>
+                  )}
+                  {isNozzleReady && (
+                    <div className="text-[10px] font-mono font-bold text-amber-400 uppercase tracking-wide">
+                      Manguera levantada
                     </div>
                   )}
                 </div>
@@ -468,7 +483,7 @@ export default function CaraCard({
                         <PlayCircle className="w-3.5 h-3.5" />
                       </button>
                     )}
-                    {isNozzleIdle && canPreauth && (
+                    {(isNozzleIdle || isNozzleReady) && canPreauth && (
                       <button
                         onClick={() => onPreAuthorize(dispenser.id, nozzle.fuelType)}
                         className="w-7 h-7 rounded-lg bg-slate-700/60 hover:bg-emerald-700/60 text-slate-400 hover:text-emerald-300 flex items-center justify-center cursor-pointer transition-all border border-slate-700/50 hover:border-emerald-600/40"

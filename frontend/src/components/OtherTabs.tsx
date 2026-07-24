@@ -10,6 +10,7 @@ import { api } from '../api';
 import type { PrintStation } from '../api/types';
 import { getPrintStationId, setPrintStationId, getStationLocation, setStationLocation } from '../printStation';
 import { getAuthToken } from '../auth';
+import { mapPumpConfigToDispenser, mapNameToFuelType, dispenserToNozzleMappings, idleNozzle } from '../utils/pumpMapping';
 
 // Headers para los fetch directos al API de impresión (no pasan por apiFetch)
 const printApiHeaders = (): Record<string, string> => {
@@ -304,33 +305,7 @@ export default function OtherTabs({
     if (tabId !== 'settings' || !setDispensers) return;
     api.getPumpsConfiguration().then(res => {
       if (!res.ok || !Array.isArray(res.data) || res.data.length === 0) return;
-      const fuelMap: Record<number, FuelType> = {
-        1: 'Regular Unleaded',
-        2: 'Premium Unleaded',
-        3: 'Diesel',
-        4: 'Kerosene',
-      };
-      setDispensers(
-        (res.data as any[]).map(p => ({
-          id: p.pump_id ?? p.id,
-          name: p.name ?? `Cara ${p.pump_id ?? p.id}`,
-          nozzles: Array.isArray(p.nozzles)
-            ? p.nozzles.map((n: any) => ({
-                fuelType: fuelMap[n.fuel_grade_id] ?? 'Regular Unleaded',
-                status: 'Idle' as const,
-                currentAmount: 0,
-                currentVolume: 0,
-                progressPercent: 0,
-              }))
-            : Array.from({ length: p.nozzles_count ?? 1 }, (_, i) => ({
-                fuelType: fuelMap[i + 1] ?? 'Regular Unleaded',
-                status: 'Idle' as const,
-                currentAmount: 0,
-                currentVolume: 0,
-                progressPercent: 0,
-              })),
-        }))
-      );
+      setDispensers((res.data as any[]).map(mapPumpConfigToDispenser));
     }).catch(() => { /* offline — mantiene estado local */ });
   }, [tabId]);
 
@@ -479,68 +454,69 @@ export default function OtherTabs({
       const pumps: any[] = pumpsData.Pumps ?? pumpsData.pumps ?? [];
       if (pumps.length === 0) throw new Error('El PTS-2 no tiene caras configuradas');
 
-      // Build fuel grade id → FuelType name map
-      const fuelNameMap: Record<number, FuelType> = {
-        1: 'Regular Unleaded',
-        2: 'Premium Unleaded',
-        3: 'Diesel',
-        4: 'Kerosene',
+      // FuelGradeId → { fuelType, name }
+      const fuelNameMap: Record<number, { fuelType: FuelType; name: string }> = {
+        1: { fuelType: 'Regular Unleaded', name: 'Regular Unleaded' },
+        2: { fuelType: 'Premium Unleaded', name: 'Premium Unleaded' },
+        3: { fuelType: 'Diesel', name: 'Diesel' },
+        4: { fuelType: 'Kerosene', name: 'Kerosene' },
+        5: { fuelType: 'LPG', name: 'LPG' },
       };
       if (fgRes.ok && fgRes.data) {
-        const fgData = (fgRes.data as any);
-        const grades: any[] = fgData.FuelGrades ?? fgData.fuel_grades ?? [];
-        const knownNames: Record<string, FuelType> = {
-          'regular': 'Regular Unleaded',
-          'super': 'Premium Unleaded',
-          'premium': 'Premium Unleaded',
-          'diesel': 'Diesel',
-          'kerosene': 'Kerosene',
-          'queroseno': 'Kerosene',
-        };
+        const grades: any[] = (fgRes.data as any).FuelGrades ?? (fgRes.data as any).fuel_grades ?? [];
         grades.forEach((g: any) => {
-          const lower = (g.Name ?? g.name ?? '').toLowerCase();
-          const found = Object.entries(knownNames).find(([k]) => lower.includes(k));
-          if (found) fuelNameMap[g.Id ?? g.id] = found[1];
+          const id = Number(g.Id ?? g.id ?? 0);
+          const name = String(g.Name ?? g.name ?? '').trim();
+          if (id > 0 && name) {
+            fuelNameMap[id] = { fuelType: mapNameToFuelType(name, id), name };
+          }
         });
       }
 
-      // Build nozzle map: pumpId → FuelType[]
-      const nozzleMap: Record<number, FuelType[]> = {};
+      // pumpId → mapeo de mangueras con FuelGradeId
+      const nozzleMap: Record<number, { fuelType: FuelType; fuelGradeId: number; name: string }[]> = {};
       if (nozzlesRes.ok && nozzlesRes.data) {
-        const nzData = (nozzlesRes.data as any);
-        const pumpNozzles: any[] = nzData.PumpNozzles ?? nzData.pump_nozzles ?? [];
+        const pumpNozzles: any[] = (nozzlesRes.data as any).PumpNozzles ?? (nozzlesRes.data as any).pump_nozzles ?? [];
         pumpNozzles.forEach((pn: any) => {
           const pid = pn.PumpId ?? pn.pump_id;
           const ids: number[] = pn.FuelGradeIds ?? pn.fuel_grade_ids ?? [];
           nozzleMap[pid] = ids
-            .filter(id => id > 0)
-            .map(id => fuelNameMap[id] ?? 'Regular Unleaded');
+            .filter((id) => id > 0)
+            .map((id) => {
+              const mapped = fuelNameMap[id] ?? { fuelType: 'Regular Unleaded' as FuelType, name: `Grade ${id}` };
+              return { fuelType: mapped.fuelType, fuelGradeId: id, name: mapped.name };
+            });
         });
       }
 
-      const newDispensers = pumps.map((p: any) => {
+      const newDispensers: DispenserState[] = pumps.map((p: any) => {
         const id = p.Id ?? p.id;
-        const fuels = nozzleMap[id] ?? [fuelNameMap[1]];
+        const fuels = nozzleMap[id] ?? [{ fuelType: fuelNameMap[1].fuelType, fuelGradeId: 1, name: fuelNameMap[1].name }];
         return {
           id,
           name: `Cara ${id}`,
-          nozzles: fuels.map(fuelType => ({
-            fuelType,
-            status: 'Idle' as const,
-            currentAmount: 0,
-            currentVolume: 0,
-            progressPercent: 0,
-          })),
+          nozzles: fuels.map((f) => idleNozzle(f.fuelType)),
         };
       });
 
       setDispensers(newDispensers);
 
-      // Persist each pump to local backend config
+      // Persistir mapeo completo en BD (no solo el conteo)
       await Promise.allSettled(
-        newDispensers.map(d =>
-          api.saveLocalPumpConfig({ pumpId: d.id, name: d.name, nozzlesCount: d.nozzles.length })
-        )
+        newDispensers.map((d) => {
+          const mapped = nozzleMap[d.id] ?? [];
+          return api.saveLocalPumpConfig({
+            pumpId: d.id,
+            name: d.name,
+            nozzlesCount: d.nozzles.length,
+            nozzles: d.nozzles.map((n, i) => ({
+              nozzle: i + 1,
+              fuelGradeId: mapped[i]?.fuelGradeId ?? i + 1,
+              fuelType: n.fuelType,
+              name: mapped[i]?.name ?? n.fuelType,
+            })),
+          });
+        }),
       );
 
       setPts2SyncResult('ok');
@@ -917,24 +893,18 @@ export default function OtherTabs({
         const newDispenser: DispenserState = {
           id: nextId,
           name: newCaraConfName.trim(),
-          nozzles: newCaraConfProducts.map(fuelType => ({
-            fuelType,
-            status: 'Idle',
-            currentAmount: 0.0,
-            currentVolume: 0.0,
-            progressPercent: 0
-          }))
+          nozzles: newCaraConfProducts.map(fuelType => idleNozzle(fuelType))
         };
         setDispensers(prev => [...prev, newDispenser]);
         setNewCaraConfName('');
 
-        // Persiste en backend
         setCaraConfigSaving(true);
         try {
           await api.saveLocalPumpConfig({
             pumpId: nextId,
             name: newDispenser.name,
             nozzlesCount: newDispenser.nozzles.length,
+            nozzles: dispenserToNozzleMappings(newDispenser),
           });
         } catch (_) { /* offline — solo local */ }
         finally { setCaraConfigSaving(false); }
@@ -947,26 +917,29 @@ export default function OtherTabs({
 
       const handleToggleNozzle = (dispenserId: number, fuelType: FuelType) => {
         if (!setDispensers) return;
-        setDispensers(prev => prev.map(d => {
-          if (d.id === dispenserId) {
+        setDispensers(prev => {
+          const next = prev.map(d => {
+            if (d.id !== dispenserId) return d;
             const hasNozzle = d.nozzles.some(n => n.fuelType === fuelType);
             let nextNozzles;
             if (hasNozzle) {
               if (d.nozzles.length <= 1) return d;
               nextNozzles = d.nozzles.filter(n => n.fuelType !== fuelType);
             } else {
-              nextNozzles = [...d.nozzles, {
-                fuelType,
-                status: 'Idle' as const,
-                currentAmount: 0.0,
-                currentVolume: 0.0,
-                progressPercent: 0
-              }];
+              nextNozzles = [...d.nozzles, idleNozzle(fuelType)];
             }
-            return { ...d, nozzles: nextNozzles };
-          }
-          return d;
-        }));
+            const updated = { ...d, nozzles: nextNozzles };
+            // Persistir mapeo en BD
+            void api.saveLocalPumpConfig({
+              pumpId: updated.id,
+              name: updated.name,
+              nozzlesCount: updated.nozzles.length,
+              nozzles: dispenserToNozzleMappings(updated),
+            });
+            return updated;
+          });
+          return next;
+        });
       };
 
       const handleAddCustomPayment = (e: React.FormEvent) => {

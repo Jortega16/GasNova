@@ -499,6 +499,20 @@ export const api = {
     return apiFetch("configuration/fuel-grades");
   },
 
+  async setFuelGradesPrices(
+    prices: { fuelGradeId: number; price: number }[],
+  ): Promise<BackendApiResponse> {
+    return apiFetch("configuration/fuel-grades/prices", {
+      method: "PUT",
+      body: JSON.stringify({
+        fuel_grades_prices: prices.map((p) => ({
+          fuel_grade_id: p.fuelGradeId,
+          price: p.price,
+        })),
+      }),
+    });
+  },
+
   async getPumpsConfigurationPts(): Promise<BackendApiResponse> {
     return apiFetch("configuration/pumps");
   },
@@ -616,10 +630,62 @@ export const api = {
     pumpId: number;
     name: string;
     nozzlesCount: number;
+    nozzles?: {
+      nozzle: number;
+      fuelGradeId: number;
+      fuelType: string;
+      name?: string;
+    }[];
   }): Promise<BackendApiResponse> {
     return apiFetch("pumps/local-configuration", {
       method: "POST",
-      body: JSON.stringify(params),
+      body: JSON.stringify({
+        pumpId: params.pumpId,
+        name: params.name,
+        nozzlesCount: params.nozzlesCount,
+        nozzles: params.nozzles?.map((n) => ({
+          nozzle: n.nozzle,
+          fuelGradeId: n.fuelGradeId,
+          fuelType: n.fuelType,
+          name: n.name ?? n.fuelType,
+        })),
+      }),
+    });
+  },
+
+  async getSyncStatus(): Promise<BackendApiResponse<{
+    sd_total?: number;
+    sd_uploaded?: number;
+    sd_gap?: number;
+    local_db_count?: number;
+    sync_needed?: boolean;
+    pts_available?: boolean;
+    error?: string;
+  }>> {
+    return apiFetch("sync/status");
+  },
+
+  async syncPumpTransactions(
+    dateTimeStart?: string,
+    dateTimeEnd?: string,
+    pumpId?: number,
+  ): Promise<BackendApiResponse<{
+    retrieved_from_pts?: number;
+    inserted?: number;
+    pending_inserted?: number;
+    skipped_duplicates?: number;
+    skipped_zero?: number;
+    sync_source?: string;
+    error?: string;
+    pts_available?: boolean;
+  }>> {
+    const params = new URLSearchParams();
+    if (dateTimeStart) params.set("date_time_start", dateTimeStart);
+    if (dateTimeEnd) params.set("date_time_end", dateTimeEnd);
+    if (pumpId != null) params.set("pump_id", String(pumpId));
+    const qs = params.toString();
+    return apiFetch(`sync/pump-transactions${qs ? `?${qs}` : ""}`, {
+      method: "POST",
     });
   },
 };

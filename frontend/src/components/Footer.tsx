@@ -11,7 +11,7 @@ interface FooterProps {
   shiftName?: string;
   isSimulating: boolean;
   setIsSimulating: (sim: boolean) => void;
-  onManualSync: () => void;
+  onManualSync: () => void | Promise<void>;
   pendingAutoConsolidationInfo?: { shortestTrxId: string; secLeft: number; totalPending: number } | null;
   autoConsolidateMinutes?: number;
   isApiOnline?: boolean;
@@ -44,15 +44,16 @@ export default function Footer({
     return () => clearInterval(interval);
   }, []);
 
-  const handleSyncClick = () => {
+  const handleSyncClick = async () => {
     if (syncing) return;
     setSyncing(true);
-    setTimeout(() => {
+    try {
+      await Promise.resolve(onManualSync());
+    } finally {
       const now = new Date();
       setLastSyncTime(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
       setSyncing(false);
-      onManualSync();
-    }, 1000);
+    }
   };
 
   return (

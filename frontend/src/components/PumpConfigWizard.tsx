@@ -35,7 +35,11 @@ interface WizardState {
 interface Props {
   isOpen: boolean;
   nextPumpId: number;
-  onSuccess: (pump: { id: number; name: string; nozzlesCount: number }) => void;
+  onSuccess: (pump: {
+    id: number;
+    name: string;
+    nozzles: { fuelType: string; fuelGradeId: number; name: string }[];
+  }) => void;
   onCancel: () => void;
 }
 
@@ -173,14 +177,29 @@ export default function PumpConfigWizard({ isOpen, nextPumpId, onSuccess, onCanc
         console.warn("[PumpConfigWizard] PTS-2 no disponible, guardando solo en BD local:", res.error);
       }
 
-      // Siempre guarda en BD local para que el dashboard lo muestre
+      // Siempre guarda en BD local el mapeo completo de mangueras
+      const nozzleMappings = state.nozzles.map((n, i) => ({
+        nozzle: i + 1,
+        fuelGradeId: n.fuelGradeId,
+        fuelType: n.fuelGradeName,
+        name: n.fuelGradeName,
+      }));
       await api.saveLocalPumpConfig({
         pumpId: state.pumpId,
         name: state.pumpName,
         nozzlesCount: state.nozzles.length,
+        nozzles: nozzleMappings,
       });
 
-      onSuccess({ id: state.pumpId, name: state.pumpName, nozzlesCount: state.nozzles.length });
+      onSuccess({
+        id: state.pumpId,
+        name: state.pumpName,
+        nozzles: nozzleMappings.map((n) => ({
+          fuelType: n.fuelType,
+          fuelGradeId: n.fuelGradeId,
+          name: n.name,
+        })),
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al configurar");
     } finally {
