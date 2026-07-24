@@ -118,6 +118,8 @@ class PumpConfiguration(Base):
     status = Column(String(50), default="active", nullable=False)
     location = Column(String(200), nullable=True)
     nozzles_count = Column(Integer, default=1)
+    # Mapeo persistente de mangueras: [{nozzle, fuel_grade_id, fuel_type, name}, ...]
+    nozzles_json = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

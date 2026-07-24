@@ -26,6 +26,7 @@ import { useVisibilityPolling } from './hooks/useVisibilityPolling';
 import { useLiveState } from './hooks/useLiveState';
 import { usePermissions } from './hooks/usePermissions';
 import { litersToDisplay, displayToLiters, unitLabel, formatVolume } from './utils/units';
+import { mapPumpConfigToDispenser, mapNameToFuelType, idleNozzle } from './utils/pumpMapping';
 
 const PriceConfigTab = lazy(() => import('./components/PriceConfigTab'));
 const ShiftReportTab = lazy(() => import('./components/ShiftReportTab'));
@@ -249,30 +250,109 @@ export default function App() {
   const setStationCanton = (v: string) => updateSystemSetting('stationCanton', v);
   const setStationDepartment = (v: string) => updateSystemSetting('stationDepartment', v);
 
+  const applyPendingFromDb = (dbPending: any[]) => {
+    setDispensers(prev => prev.map(d => ({
+      ...d,
+      nozzles: d.nozzles.map(n => {
+        const matches = dbPending.filter((pt: any) => {
+          if (pt.pumpId !== d.id) return false;
+          const mappedFuel = mapNameToFuelType(String(pt.fuelType || pt.fuel_type || ''));
+          return mappedFuel === n.fuelType || pt.fuelType === n.fuelType;
+        });
+        const mapped = matches.map((pt: any) => ({
+          id: pt.id,
+          dateTime: pt.dateTime,
+          dispenserId: pt.pumpId,
+          volume: litersToDisplay(pt.volume, unitMeasure),
+          amount: pt.amount,
+          fuelType: n.fuelType,
+          status: 'Pending' as const,
+          billingType: 'Ticket' as const,
+          createdAt: Date.now(),
+        }));
+        const localOnly = (n.pendingTransactions || []).filter(
+          (pt) => !mapped.some((m) => m.id === pt.id)
+        );
+        return { ...n, pendingTransactions: [...mapped, ...localOnly] };
+      }),
+    })));
+  };
+
+  const recoverSdTransactions = async (): Promise<{
+    inserted: number;
+    pendingInserted: number;
+    error?: string;
+  }> => {
+    const syncRes = await api.syncPumpTransactions();
+    if (!syncRes.ok || !syncRes.data) {
+      return { inserted: 0, pendingInserted: 0, error: syncRes.error || 'Error al recuperar SD' };
+    }
+    if ((syncRes.data as any).error) {
+      return { inserted: 0, pendingInserted: 0, error: String((syncRes.data as any).error) };
+    }
+    return {
+      inserted: Number(syncRes.data.inserted || 0),
+      pendingInserted: Number(syncRes.data.pending_inserted || 0),
+    };
+  };
+
+  /** Recuperación SD automática: abre POS, PTS online, o botón Sincronizar. */
+  const sdSyncInFlightRef = useRef(false);
+  const runAutomaticSdSync = async (opts?: { silent?: boolean; reason?: string }) => {
+    if (isSimulating || sdSyncInFlightRef.current) {
+      return { inserted: 0, pendingInserted: 0 };
+    }
+    sdSyncInFlightRef.current = true;
+    try {
+      const sd = await recoverSdTransactions();
+      if (sd.error) {
+        if (!opts?.silent) {
+          console.warn(`[SD sync/${opts?.reason || 'auto'}]`, sd.error);
+        }
+        return sd;
+      }
+
+      if (sd.pendingInserted > 0 || sd.inserted > 0) {
+        const pendingRes = await api.getPendingTransactions();
+        if (pendingRes.ok && pendingRes.data) {
+          applyPendingFromDb(pendingRes.data as any[]);
+        }
+        if (shiftDetails.shiftId) {
+          api.getShiftTransactions(shiftDetails.shiftId).then(res => {
+            if (res.ok && res.data) {
+              const normalized = (res.data as any[]).map(normalizeBackendTransaction);
+              const uniqueTx = normalized.filter((tx, index, self) =>
+                self.findIndex(t => t.id === tx.id) === index
+              );
+              setTransactions(uniqueTx);
+            }
+          });
+        }
+        if (!opts?.silent) {
+          const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          setAlerts(prev => [{
+            id: `AL-SD-${Math.random()}`,
+            dateTime: `Hoy ${timeStr}`,
+            pumpName: 'SISTEMA',
+            volume: '—',
+            amount: '—',
+            paymentType: 'Auto',
+            message: `📦 Recuperación SD automática: ${sd.pendingInserted} pendiente(s) de cobro, ${sd.inserted} ya cobrada(s).`,
+            isCustomNote: true,
+          }, ...prev]);
+        }
+      }
+      return sd;
+    } finally {
+      sdSyncInFlightRef.current = false;
+    }
+  };
+
   // Load pending transactions once system settings are ready
   useEffect(() => {
     api.getPendingTransactions().then(pRes => {
       if (pRes.ok && pRes.data) {
-        const dbPending = pRes.data;
-        setDispensers(prev => prev.map(d => ({
-          ...d,
-          nozzles: d.nozzles.map(n => {
-            const matches = dbPending.filter((pt: any) => pt.pumpId === d.id && pt.fuelType === n.fuelType);
-            const mapped = matches.map((pt: any) => ({
-              id: pt.id,
-              dateTime: pt.dateTime,
-              dispenserId: pt.pumpId,
-              // DB stores liters — convert to display unit
-              volume: litersToDisplay(pt.volume, unitMeasure),
-              amount: pt.amount,
-              fuelType: pt.fuelType,
-              status: 'Pending' as const,
-              billingType: 'Ticket' as const,
-              createdAt: Date.now(),
-            }));
-            return { ...n, pendingTransactions: mapped };
-          }),
-        })));
+        applyPendingFromDb(pRes.data as any[]);
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -296,24 +376,33 @@ export default function App() {
     /**
      * Maps a jsonPTS status_type string to a dashboard PumpStatus.
      *
-     * PumpIdleStatus        → 'Idle'
-     * PumpFillingStatus     → 'Dispensing'  (with live volume/amount)
-     * PumpEndOfTransaction  → 'EndOfTransaction'  (needs close + billing)
-     * PumpAuthorizedStatus  → 'Authorized'  (authorized, nozzle not yet lifted)
-     * PumpOfflineStatus     → 'Offline'
+     * Estados de manguera/cara (PTS-2 → UI):
+     * 1. Reposo              → Idle          (PumpIdleStatus, manguera colgada)
+     * 2. Manguera levantada  → Ready         (PumpIdleStatus + NozzleUp)
+     * 3. Despachando         → Dispensing    (PumpFillingStatus)
+     * 4. Fin despacho ↑      → EndOfTransaction (PumpEndOfTransactionStatus)
+     * 5. Colgada / cobro     → Idle / Unpaid (tras colgar; Unpaid si hay pendiente)
+     *    Autorizada          → Authorized/Prepaid
+     *    Sin señal           → Offline
      */
-    const mapPts2Status = (statusType: string): PumpStatus => {
+    const mapPts2Status = (statusType: string, nozzleUp: number = 0): PumpStatus => {
       switch (statusType) {
-        case 'PumpFillingStatus':      return 'Dispensing';
-        case 'PumpEndOfTransactionStatus': return 'EndOfTransaction';
-        case 'PumpAuthorizedStatus':   return 'Authorized';
-        case 'PumpOfflineStatus':      return 'Offline';
+        case 'PumpFillingStatus':
+          return 'Dispensing';
+        case 'PumpEndOfTransactionStatus':
+          return 'EndOfTransaction';
+        case 'PumpAuthorizedStatus':
+          return 'Authorized';
+        case 'PumpOfflineStatus':
+          return 'Offline';
         case 'PumpIdleStatus':
-        default:                       return 'Idle';
+          return nozzleUp > 0 ? 'Ready' : 'Idle';
+        default:
+          return nozzleUp > 0 ? 'Ready' : 'Idle';
       }
     };
 
-    // Niveles de tanque (convierte Litros a Galones si aplica)
+    // Niveles de tanque (sin conversión Gal↔L: solo se muestra el valor del PTS)
     if (res.tanks) {
       setTanks(prev => prev.map(t => {
         const matchId = t.id === 'T-01' ? 1 : t.id === 'T-02' ? 2 : t.id === 'T-03' ? 3 : 0;
@@ -351,24 +440,22 @@ export default function App() {
         const pumpData = res.pumps!.find(p => p.pump === dispenser.id);
         if (!pumpData) return dispenser;
 
-        const pts2Status = mapPts2Status(pumpData.status_type);
+        const liftedNozzleNumber = (pumpData as any).nozzle || (pumpData as any).Nozzle || 0;
+        const pts2Status = mapPts2Status(pumpData.status_type, liftedNozzleNumber);
 
         // ── Auto-autorizar al levantar manguera ─────────────────────────────
         // Si está activado en Ajustes: cuando el PTS-2 reporta una manguera
-        // levantada (NozzleUp > 0) mientras la bomba sigue Idle (sin autorizar
-        // todavía) y la cara no está bloqueada, se envía PumpAuthorize sola,
-        // sin límite de monto/volumen, para que el cliente pueda despachar de
-        // inmediato sin que el operador tenga que autorizar manualmente.
-        const liftedNozzleNumber = (pumpData as any).nozzle || (pumpData as any).Nozzle || 0;
+        // levantada (Ready / NozzleUp) y la cara no está bloqueada, se envía
+        // PumpAuthorize sola, sin límite de monto/volumen.
         if (
           autoAuthorizeEnabledRef.current &&
-          pts2Status === 'Idle' &&
+          (pts2Status === 'Ready' || pts2Status === 'Idle') &&
           !dispenser.isBlocked &&
           liftedNozzleNumber > 0 &&
           !autoAuthorizingRef.current.has(dispenser.id)
         ) {
           const liftedNozzle = dispenser.nozzles[liftedNozzleNumber - 1];
-          if (liftedNozzle && liftedNozzle.status === 'Idle') {
+          if (liftedNozzle && (liftedNozzle.status === 'Idle' || liftedNozzle.status === 'Ready')) {
             autoAuthorizingRef.current.add(dispenser.id);
             const pumpIdToAuth = dispenser.id;
             setTimeout(async () => {
@@ -393,6 +480,7 @@ export default function App() {
             //  a) The nozzle is actively dispensing or end-of-transaction (PTS-2 is authoritative)
             //  b) The nozzle was 'Authorized' (PTS-2 confirmed the authorization)
             //  c) The nozzle is offline
+            //  d) Ready = manguera levantada en reposo
             //
             // We DON'T override 'Blocked' or 'Prepaid' that the operator set locally
             // (the PTS-2 can take up to 1-2s to reflect those — optimistic local state).
@@ -415,92 +503,108 @@ export default function App() {
               };
             }
 
+            // 2) Manguera levantada en Idle → Ready
+            if (pts2Status === 'Ready' && isActiveNozzle) {
+              if (nozzle.status === 'Blocked' || nozzle.status === 'Prepaid' || nozzle.status === 'Unpaid') {
+                return nozzle;
+              }
+              return {
+                ...nozzle,
+                status: 'Ready',
+              };
+            }
+
+            // Otras mangueras vuelven a Idle si la activa está levantada/despachando
+            if ((pts2Status === 'Ready' || pts2Status === 'Dispensing' || pts2Status === 'EndOfTransaction') && !isActiveNozzle) {
+              if (nozzle.status === 'Blocked' || nozzle.status === 'Prepaid' || nozzle.status === 'Unpaid' || nozzle.status === 'Authorized') {
+                return nozzle;
+              }
+              if (nozzle.status === 'Ready' || nozzle.status === 'Dispensing' || nozzle.status === 'EndOfTransaction') {
+                return { ...nozzle, status: 'Idle' };
+              }
+            }
+
             if (pts2Status === 'EndOfTransaction' && isActiveNozzle) {
               const lastVol = pumpData.last_volume ?? nozzle.currentVolume;
               const lastAmt = pumpData.last_amount ?? nozzle.currentAmount;
+              const isPrep = nozzle.status === 'Prepaid' || (!!nozzle.limitAmount && !nozzle.isPostpaid);
 
-              // Solo actuar si aún no capturamos este EndOfTransaction
-              // (evitar que el mismo evento dispare el capture múltiples veces
-              // mientras el polling sigue llegando en estado EndOfTransaction)
-              if (nozzle.ptsTransactionId) {
-                // Ya capturado en un tick anterior, no hacer nada
-                return nozzle;
-              }
+              // Estado 4: fin de despacho con manguera aún levantada.
+              // Captura una sola vez; la UI permanece en EndOfTransaction hasta colgar.
+              if (!nozzle.ptsTransactionId) {
+                const pumpIdCapture = dispenser.id;
+                const nozzleFuelType = nozzle.fuelType;
 
-              // ── Capture real de la transacción del PTS-2 (gap 1 + 3) ──────────
-              // Async fuera del render: obtiene el ID real de la transacción,
-              // guarda en pending_transactions con ese ID, y cierra en el PTS-2.
-              const pumpIdCapture = dispenser.id;
-              const isPrep = nozzle.status === 'Prepaid';
-              const nozzleFuelType = nozzle.fuelType;
+                setTimeout(async () => {
+                  const captureRes = await api.capturePendingTransaction(pumpIdCapture);
+                  const realTrxId = captureRes.ok && captureRes.data
+                    ? captureRes.data.trx_id
+                    : `TRX-${pumpIdCapture}-${Date.now()}`;
 
-              setTimeout(async () => {
-                // 1. Captura con ID real del PTS-2
-                const captureRes = await api.capturePendingTransaction(pumpIdCapture);
-                const realTrxId = captureRes.ok && captureRes.data
-                  ? captureRes.data.trx_id
-                  : `TRX-${pumpIdCapture}-${Date.now()}`;
+                  // Cierra en PTS-2 sin esperar el cobro
+                  api.closeTransaction(pumpIdCapture);
 
-                // 2. Cierra la transacción en el PTS-2 (gap 2) —
-                //    libera la bomba sin esperar al cobro del cajero
-                api.closeTransaction(pumpIdCapture);
+                  setDispensers(prev => prev.map(d => d.id === pumpIdCapture ? {
+                    ...d,
+                    nozzles: d.nozzles.map(n => n.fuelType === nozzleFuelType ? {
+                      ...n,
+                      ptsTransactionId: realTrxId,
+                    } : n),
+                  } : d));
 
-                // Propaga el ID real al estado de la nozzle para que el cobro lo use
-                setDispensers(prev => prev.map(d => d.id === pumpIdCapture ? {
-                  ...d,
-                  nozzles: d.nozzles.map(n => n.fuelType === nozzleFuelType ? {
-                    ...n,
-                    ptsTransactionId: realTrxId,
-                  } : n),
-                } : d));
+                  if (isPrep) {
+                    const vol = captureRes.ok && captureRes.data ? captureRes.data.volume : lastVol;
+                    const amt = captureRes.ok && captureRes.data ? captureRes.data.amount : lastAmt;
+                    completeFuelingJob(pumpIdCapture, vol, amt, nozzleFuelType, 'Cash', realTrxId);
+
+                    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    setAlerts(prev => [{
+                      id: `AL-PAID-${Math.random()}`,
+                      dateTime: `Hoy ${timeStr}`,
+                      pumpName: `Cara ${pumpIdCapture}`,
+                      volume: formatVolume(vol, unitMeasure),
+                      amount: `$${amt.toFixed(2)}`,
+                      paymentType: 'Cash',
+                      message: `✓ Prepago completado: $${amt.toFixed(2)} — Cara ${pumpIdCapture} (${nozzleFuelType}) — Trx ${realTrxId}`,
+                      isCustomNote: true,
+                    }, ...prev]);
+                  }
+                }, 50);
 
                 if (isPrep) {
-                  // Prepago: completa automáticamente la venta
-                  const vol = captureRes.ok && captureRes.data ? captureRes.data.volume : lastVol;
-                  const amt = captureRes.ok && captureRes.data ? captureRes.data.amount : lastAmt;
-
-                  completeFuelingJob(pumpIdCapture, vol, amt, nozzleFuelType, 'Cash', realTrxId);
-
-                  const now = new Date();
-                  const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                  const customAlert: ShiftAlert = {
-                    id: `AL-PAID-${Math.random()}`,
-                    dateTime: `Hoy ${timeStr}`,
-                    pumpName: `Cara ${pumpIdCapture}`,
-                    volume: `${vol.toFixed(2)} L`,
-                    amount: `$${amt.toFixed(2)}`,
-                    paymentType: 'Cash',
-                    message: `✓ Prepago completado: $${amt.toFixed(2)} — Cara ${pumpIdCapture} (${nozzleFuelType}) — Trx ${realTrxId}`,
-                    isCustomNote: true,
+                  return {
+                    ...nozzle,
+                    status: 'Idle',
+                    currentVolume: 0.0,
+                    currentAmount: 0.0,
+                    progressPercent: 0,
+                    limitAmount: undefined,
+                    isPostpaid: false,
+                    ptsTransactionId: '__capturing__',
                   };
-                  setAlerts(prev => [customAlert, ...prev]);
                 }
-              }, 50);
 
-              if (isPrep) {
-                // Optimista: regresa a Idle inmediatamente en la UI
                 return {
                   ...nozzle,
-                  status: 'Idle',
-                  currentVolume: 0.0,
-                  currentAmount: 0.0,
-                  progressPercent: 0,
-                  limitAmount: undefined,
-                  isPostpaid: false,
+                  status: 'EndOfTransaction',
+                  currentVolume: lastVol,
+                  currentAmount: lastAmt,
+                  progressPercent: 100,
                   ptsTransactionId: '__capturing__',
                 };
               }
 
-              // Postpay/libre: queda en Unpaid hasta que el cajero cobra
-              // El ptsTransactionId se propagará cuando termine el capture async
-              return {
-                ...nozzle,
-                status: 'Unpaid',
-                currentVolume: lastVol,
-                currentAmount: lastAmt,
-                progressPercent: 100,
-                ptsTransactionId: '__capturing__',
-              };
+              // Ya capturando/capturado: mantener totales en EndOfTransaction
+              if (nozzle.status === 'EndOfTransaction' || nozzle.status === 'Dispensing' || nozzle.status === 'Unpaid') {
+                return {
+                  ...nozzle,
+                  status: 'EndOfTransaction',
+                  currentVolume: lastVol,
+                  currentAmount: lastAmt,
+                  progressPercent: 100,
+                };
+              }
+              return nozzle;
             }
 
             if (pts2Status === 'Authorized' && isActiveNozzle) {
@@ -514,13 +618,18 @@ export default function App() {
               return { ...nozzle, status: 'Offline' };
             }
 
-            if (pts2Status === 'Idle' && nozzle.status === 'Unpaid') {
-              // Bomba volvió a Idle mientras había un Unpaid sin cobrar (pistola colgada manualmente).
-              // La transacción ya fue cerrada en EndOfTransaction; solo mueve el pendiente a cola.
+            // Estado 5: manguera colgada (Idle) tras fin de despacho → cola de cobro
+            if (
+              pts2Status === 'Idle' &&
+              (nozzle.status === 'Unpaid' || nozzle.status === 'EndOfTransaction')
+            ) {
               const trxId = nozzle.ptsTransactionId && nozzle.ptsTransactionId !== '__capturing__'
                 ? nozzle.ptsTransactionId : undefined;
+              const vol = nozzle.currentVolume;
+              const amt = nozzle.currentAmount;
+              const fuel = nozzle.fuelType;
               setTimeout(() => {
-                completeFuelingJob(dispenser.id, nozzle.currentVolume, nozzle.currentAmount, nozzle.fuelType, undefined, trxId);
+                completeFuelingJob(dispenser.id, vol, amt, fuel, undefined, trxId);
               }, 10);
 
               return {
@@ -580,9 +689,16 @@ export default function App() {
   const [showShiftReceipt, setShowShiftReceipt] = useState<boolean>(false);
   const [showShiftCloseConfirm, setShowShiftCloseConfirm] = useState<boolean>(false);
 
-  // Triggered when manual sync is requested from the footer
-  const handleManualSync = () => {
-    // Refresh transactions from database
+  const handleManualSync = async () => {
+    // Misma recuperación SD automática, forzada por el operador
+    const sd = await runAutomaticSdSync({ silent: true, reason: 'manual' });
+
+    // Refrescar pendientes por si no hubo inserts nuevos pero cambió la cola
+    const pendingRes = await api.getPendingTransactions();
+    if (pendingRes.ok && pendingRes.data) {
+      applyPendingFromDb(pendingRes.data as any[]);
+    }
+
     if (shiftDetails.shiftId) {
       api.getShiftTransactions(shiftDetails.shiftId).then(res => {
         if (res.ok && res.data) {
@@ -595,7 +711,6 @@ export default function App() {
       });
     }
 
-    // Refresh scheduled prices from PostgreSQL
     api.getScheduledPrices().then(res => {
       if (res.ok && res.data) {
         const mapped = res.data.map((item: any) => ({
@@ -609,20 +724,36 @@ export default function App() {
       }
     });
 
-    // Log manual sync event
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const syncAlert: ShiftAlert = {
+    const sdMsg = sd.error
+      ? `⚠️ SD: ${sd.error}`
+      : `SD: ${sd.pendingInserted} pendientes + ${sd.inserted} cobradas`;
+    setAlerts(prev => [{
       id: `AL-SYNC-${Math.random()}`,
       dateTime: `Hoy ${timeStr}`,
       pumpName: 'SISTEMA',
       volume: '—',
       amount: '—',
       paymentType: 'Auto',
-      message: `🔄 Sincronización manual completada con la base de datos PostgreSQL.`,
+      message: `🔄 Sincronización completada. ${sdMsg}`,
       isCustomNote: true
-    };
-    setAlerts(prev => [syncAlert, ...prev]);
+    }, ...prev]);
   };
+
+  // Recuperación SD automática:
+  // 1) al abrir / cuando PTS-2 queda online
+  // 2) en segundo plano cada 60 s (sin pulsar Sincronizar)
+  useEffect(() => {
+    if (isSimulating || !isPts2Online) return;
+    runAutomaticSdSync({ reason: 'pts-online' });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSimulating, isPts2Online]);
+
+  useVisibilityPolling(
+    () => { runAutomaticSdSync({ silent: true, reason: 'interval' }); },
+    60_000,
+    !isSimulating && isPts2Online,
+  );
 
   // Pre-authorization handler
   const handlePreAuthorizeClick = (dispenserId: number, fuelType: FuelType) => {
@@ -645,7 +776,9 @@ export default function App() {
     // Check if Cara is already in use by another nozzle
     const disp = dispensers.find(d => d.id === dispenserId);
     if (disp) {
-      const activeNozzle = disp.nozzles.find(n => n.status === 'Dispensing' || n.status === 'Prepaid' || n.status === 'Unpaid');
+      const activeNozzle = disp.nozzles.find(n =>
+        n.status === 'Dispensing' || n.status === 'Prepaid' || n.status === 'Unpaid' || n.status === 'EndOfTransaction' || n.status === 'Ready'
+      );
       if (activeNozzle && activeNozzle.fuelType !== fuelType) {
         const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const errorAlert: ShiftAlert = {
@@ -706,10 +839,8 @@ export default function App() {
     if (preauthMode === 'Full') {
       api.postpayAuthorizePump(preauthorizingPumpId, nozzleNumber);
     } else {
-      // PTS-2 expects volumes in liters — convert only when limit is by Volume
-      const finalLimit = (preauthLimitType === 'Volume' && valLimit !== undefined)
-        ? displayToLiters(valLimit, unitMeasure)
-        : valLimit;
+      // Sin conversión Gal↔L: el límite se envía con el valor de la etiqueta actual
+      const finalLimit = valLimit;
       api.authorizePump(
         preauthorizingPumpId,
         nozzleNumber,
@@ -913,7 +1044,9 @@ export default function App() {
     // Check if Cara is already in use by another nozzle
     const disp = dispensers.find(d => d.id === dispenserId);
     if (disp) {
-      const activeNozzle = disp.nozzles.find(n => n.status === 'Dispensing' || n.status === 'Prepaid' || n.status === 'Unpaid');
+      const activeNozzle = disp.nozzles.find(n =>
+        n.status === 'Dispensing' || n.status === 'Prepaid' || n.status === 'Unpaid' || n.status === 'EndOfTransaction' || n.status === 'Ready'
+      );
       if (activeNozzle && activeNozzle.fuelType !== fuelType) {
         const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const errorAlert: ShiftAlert = {
@@ -1277,15 +1410,25 @@ export default function App() {
 
   // Update customize nozzle list for a dispenser (1-4 products)
   const handleUpdateNozzles = (dispenserId: number, updatedNozzles: NozzleState[]) => {
-    setDispensers(prev => prev.map(d => {
-      if (d.id === dispenserId) {
-        return {
-          ...d,
-          nozzles: updatedNozzles
-        };
-      }
-      return d;
-    }));
+    setDispensers(prev => {
+      const next = prev.map(d => {
+        if (d.id !== dispenserId) return d;
+        const updated = { ...d, nozzles: updatedNozzles };
+        void api.saveLocalPumpConfig({
+          pumpId: updated.id,
+          name: updated.name,
+          nozzlesCount: updated.nozzles.length,
+          nozzles: updated.nozzles.map((n, i) => ({
+            nozzle: i + 1,
+            fuelGradeId: ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene', 'LPG'].indexOf(n.fuelType) + 1 || i + 1,
+            fuelType: n.fuelType,
+            name: n.fuelType,
+          })),
+        });
+        return updated;
+      });
+      return next;
+    });
 
     // Log update
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1401,19 +1544,6 @@ export default function App() {
     setAlerts(prev => [logItem, ...prev]);
   };
 
-  // Price updates (Configurator Panel)
-  const handleUpdatePrice = (fuelType: FuelType, newPrice: number) => {
-    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setPrices(prev => prev.map(p =>
-      p.fuelType === fuelType ? { ...p, price: newPrice, lastUpdated: `Hoy ${timeStr}` } : p
-    ));
-
-    const nozzleNumber = FUEL_GRADES.indexOf(fuelType) + 1;
-    dispensers.forEach(d => {
-      api.setPumpPrices(d.id, [{ nozzle: nozzleNumber, price: newPrice }]);
-    });
-  };
-
   const FUEL_GRADES: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene', 'LPG'];
   const PRICE_SETTING_KEY: Record<FuelType, string> = {
     'Regular Unleaded': 'price_regular_unleaded',
@@ -1422,45 +1552,233 @@ export default function App() {
     'Kerosene': 'price_kerosene',
     'LPG': 'price_lpg',
   };
-
-  const handleFetchPricesFromPts2 = async () => {
-    const res = await api.getPumpPrices(1);
-    if (!res.ok || !res.prices || res.prices.length === 0) {
-      throw new Error(res.error || 'No se pudieron recuperar los precios desde el controlador PTS-2.');
-    }
-    for (const p of prices) {
-      const nozzleNumber = FUEL_GRADES.indexOf(p.fuelType) + 1;
-      const match = res.prices.find((item: any) => (item.Nozzle || item.nozzle) === nozzleNumber);
-      if (match) {
-        const priceVal = match.Price ?? p.price;
-        setPrices(prev => prev.map(old =>
-          old.fuelType === p.fuelType
-            ? { ...old, price: priceVal, lastUpdated: `Hoy ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` }
-            : old
-        ));
-        await saveSystemSetting(PRICE_SETTING_KEY[p.fuelType], String(priceVal));
-      }
-    }
+  const NAME_SETTING_KEY: Record<FuelType, string> = {
+    'Regular Unleaded': 'fuel_name_regular_unleaded',
+    'Premium Unleaded': 'fuel_name_premium_unleaded',
+    'Diesel': 'fuel_name_diesel',
+    'Kerosene': 'fuel_name_kerosene',
+    'LPG': 'fuel_name_lpg',
   };
 
-  const handleSyncPricesToPts2 = async () => {
-    for (const p of prices) {
-      const nozzleNumber = FUEL_GRADES.indexOf(p.fuelType) + 1;
-      await saveSystemSetting(PRICE_SETTING_KEY[p.fuelType], String(p.price));
+  /** Mapea el Name/Id del PTS-2 (cmd #57 GetFuelGradesConfiguration) a FuelType interno. */
+  const mapPtsFuelGradeToFuelType = (name: string, id: number): FuelType | null => {
+    const lower = name.toLowerCase().trim();
+    const known: [string, FuelType][] = [
+      ['premium', 'Premium Unleaded'],
+      ['super', 'Premium Unleaded'],
+      ['regular', 'Regular Unleaded'],
+      ['diesel', 'Diesel'],
+      ['kerosene', 'Kerosene'],
+      ['queroseno', 'Kerosene'],
+      ['glp', 'LPG'],
+      ['lpg', 'LPG'],
+      ['gasolina', 'Regular Unleaded'],
+    ];
+    for (const [key, fuelType] of known) {
+      if (lower.includes(key)) return fuelType;
+    }
+    return FUEL_GRADES[id - 1] ?? null;
+  };
+
+  // Price updates (Configurator Panel) — inmediato: BD + PTS-2 (SetFuelGradesPrices + PumpSetPrices)
+  const resolvePtsFuelGradeId = async (fuelType: FuelType): Promise<number> => {
+    const res = await api.getFuelGradesConfiguration();
+    if (!res.ok || !res.data) {
+      throw new Error(res.error || 'No se pudo leer FuelGrades del PTS-2.');
+    }
+    const grades: Array<Record<string, unknown>> =
+      (res.data as { FuelGrades?: Array<Record<string, unknown>> }).FuelGrades
+      ?? (res.data as { fuel_grades?: Array<Record<string, unknown>> }).fuel_grades
+      ?? [];
+    for (const g of grades) {
+      const id = Number(g.Id ?? g.id ?? 0);
+      const name = String(g.Name ?? g.name ?? '');
+      if (id > 0 && mapPtsFuelGradeToFuelType(name, id) === fuelType) {
+        return id;
+      }
+    }
+    const fallback = FUEL_GRADES.indexOf(fuelType) + 1;
+    if (fallback > 0) return fallback;
+    throw new Error(`No hay FuelGradeId en el PTS-2 para ${fuelType}.`);
+  };
+
+  const pushPriceToPts2 = async (fuelType: FuelType, newPrice: number): Promise<void> => {
+    const gradeId = await resolvePtsFuelGradeId(fuelType);
+    const globalRes = await api.setFuelGradesPrices([{ fuelGradeId: gradeId, price: newPrice }]);
+    if (!globalRes.ok) {
+      throw new Error(globalRes.error || 'SetFuelGradesPrices falló en el PTS-2.');
+    }
+
+    // Actualiza también precios por manguera según mapeo real del PTS-2
+    const nozzlesRes = await api.getNozzlesConfiguration();
+    const pumpNozzles: Array<Record<string, unknown>> =
+      (nozzlesRes.data as { PumpNozzles?: Array<Record<string, unknown>> })?.PumpNozzles
+      ?? (nozzlesRes.data as { pump_nozzles?: Array<Record<string, unknown>> })?.pump_nozzles
+      ?? [];
+
+    if (pumpNozzles.length > 0) {
+      for (const pn of pumpNozzles) {
+        const pumpId = Number(pn.PumpId ?? pn.pump_id ?? 0);
+        const ids = (pn.FuelGradeIds ?? pn.fuel_grade_ids ?? []) as number[];
+        if (pumpId <= 0) continue;
+        for (let i = 0; i < ids.length; i++) {
+          if (Number(ids[i]) === gradeId) {
+            await api.setPumpPrices(pumpId, [{ nozzle: i + 1, price: newPrice }]);
+          }
+        }
+      }
+    } else {
       for (const d of dispensers) {
-        if (d.nozzles.some(n => n.fuelType === p.fuelType)) {
-          await api.setPumpPrices(d.id, [{ nozzle: nozzleNumber, price: p.price }]);
+        if (d.nozzles.some(n => n.fuelType === fuelType)) {
+          const nozzleNumber = Math.max(1, FUEL_GRADES.indexOf(fuelType) + 1);
+          await api.setPumpPrices(d.id, [{ nozzle: nozzleNumber, price: newPrice }]);
         }
       }
     }
   };
 
-  // Adding programmed price plan
-  const handleAddScheduledPrice = (dateTime: string, fuelType: FuelType, newPrice: number) => {
+  const handleUpdatePrice = async (fuelType: FuelType, newPrice: number) => {
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    setPrices(prev => prev.map(p =>
+      p.fuelType === fuelType ? { ...p, price: newPrice, lastUpdated: `Hoy ${timeStr}` } : p
+    ));
+    await saveSystemSetting(PRICE_SETTING_KEY[fuelType], String(newPrice));
+    await pushPriceToPts2(fuelType, newPrice);
+  };
+
+  // Importar precios + nombres desde PTS-2 vía GetFuelGradesConfiguration (jsonPTS cmd #57).
+  // PumpGetPrices solo trae floats por boquilla; no incluye Name.
+  const handleFetchPricesFromPts2 = async () => {
+    const res = await api.getFuelGradesConfiguration();
+    if (!res.ok || !res.data) {
+      throw new Error(res.error || 'No se pudo leer GetFuelGradesConfiguration del PTS-2.');
+    }
+    const grades: Array<Record<string, unknown>> =
+      (res.data as { FuelGrades?: Array<Record<string, unknown>>; fuel_grades?: Array<Record<string, unknown>> }).FuelGrades
+      ?? (res.data as { fuel_grades?: Array<Record<string, unknown>> }).fuel_grades
+      ?? [];
+    const configured = grades.filter((g) => {
+      const id = Number(g.Id ?? g.id ?? 0);
+      const name = String(g.Name ?? g.name ?? '').trim();
+      return id > 0 && name.length > 0;
+    });
+    if (configured.length === 0) {
+      throw new Error('El PTS-2 no tiene grados de combustible configurados (FuelGrades vacío).');
+    }
+
+    const timeStr = `Hoy ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    const updates = new Map<FuelType, { price: number; name: string }>();
+    for (const g of configured) {
+      const id = Number(g.Id ?? g.id);
+      const name = String(g.Name ?? g.name).trim();
+      const price = Number(g.Price ?? g.price);
+      if (!name || Number.isNaN(price) || price < 0) continue;
+      const fuelType = mapPtsFuelGradeToFuelType(name, id);
+      if (!fuelType) continue;
+      updates.set(fuelType, { price, name });
+    }
+    if (updates.size === 0) {
+      throw new Error('No se pudo mapear ningún grado FuelGrades del PTS-2 a combustibles conocidos.');
+    }
+
+    setPrices((prev) => {
+      const byFuel = new Map(prev.map((p) => [p.fuelType, p]));
+      for (const [fuelType, u] of updates) {
+        byFuel.set(fuelType, {
+          fuelType,
+          price: u.price,
+          name: u.name,
+          lastUpdated: timeStr,
+        });
+      }
+      return FUEL_GRADES.filter((ft) => byFuel.has(ft)).map((ft) => byFuel.get(ft)!);
+    });
+
+    for (const [fuelType, u] of updates) {
+      await saveSystemSetting(PRICE_SETTING_KEY[fuelType], String(u.price));
+      await saveSystemSetting(NAME_SETTING_KEY[fuelType], u.name);
+    }
+  };
+
+  const handleSyncPricesToPts2 = async () => {
+    for (const p of prices) {
+      await saveSystemSetting(PRICE_SETTING_KEY[p.fuelType], String(p.price));
+      await pushPriceToPts2(p.fuelType, p.price);
+    }
+  };
+
+  // Programado: guarda en BD GasNova + agenda en el scheduler nativo del PTS-2 (cmd #61)
+  const handleAddScheduledPrice = async (dateTime: string, fuelType: FuelType, newPrice: number) => {
     const randomId = `SP-${Math.floor(100 + Math.random() * 900)}`;
     setScheduledPrices(prev => [{ id: randomId, dateTime, fuelType, newPrice, status: 'Pending' }, ...prev]);
-    api.createScheduledPrice({ id: randomId, date_time: dateTime, fuel_type: fuelType, new_price: newPrice })
-      .then(res => { if (!res.ok) console.error('Error al agendar precio en backend:', res.error); });
+    const createRes = await api.createScheduledPrice({
+      id: randomId,
+      date_time: dateTime,
+      fuel_type: fuelType,
+      new_price: newPrice,
+    });
+    if (!createRes.ok) {
+      throw new Error(createRes.error || 'No se pudo guardar el precio programado en BD.');
+    }
+
+    // Empujar también al scheduler del controlador PTS-2
+    const gradeId = await resolvePtsFuelGradeId(fuelType);
+    const existingRes = await api.getPricesSchedulerConfiguration();
+    const raw = (existingRes.data as { PriceSchedules?: Array<Record<string, unknown>> })?.PriceSchedules ?? [];
+    const existing = raw
+      .filter((s) => Number(s.FuelGradeId ?? s.Id ?? 0) > 0 || s.Enabled === true)
+      .map((s) => ({
+        id: Number(s.Id),
+        enabled: !!s.Enabled,
+        fuelGradeId: Number(s.FuelGradeId ?? 0),
+        price: Number(s.Price ?? 0),
+        dateTime: String(s.DateTime ?? ''),
+        everyMonday: !!s.EveryMonday,
+        everyTuesday: !!s.EveryTuesday,
+        everyWednesday: !!s.EveryWednesday,
+        everyThursday: !!s.EveryThursday,
+        everyFriday: !!s.EveryFriday,
+        everySaturday: !!s.EverySaturday,
+        everySunday: !!s.EverySunday,
+      }))
+      .filter((s) => s.id >= 1 && s.id <= 10 && s.enabled && s.fuelGradeId > 0);
+
+    const usedIds = new Set(existing.map((s) => s.id));
+    let nextId = 1;
+    while (usedIds.has(nextId) && nextId <= 10) nextId++;
+    if (nextId > 10) {
+      throw new Error('El PTS-2 ya tiene 10 programas de precio (máximo). Cancele uno antes de agendar.');
+    }
+
+    // dateTime UI: "YYYY-MM-DD HH:MM" → PTS: "YYYY-MM-DDThh:mm:ss"
+    const normalizedPtsDateTime = (() => {
+      const m = dateTime.trim().match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2}))?$/);
+      if (!m) throw new Error(`Fecha/hora inválida para el PTS-2: ${dateTime}`);
+      return `${m[1]}T${m[2]}:${m[3] ?? '00'}`;
+    })();
+
+    const schedules = [
+      ...existing,
+      {
+        id: nextId,
+        enabled: true,
+        fuelGradeId: gradeId,
+        price: newPrice,
+        dateTime: normalizedPtsDateTime,
+        everyMonday: false,
+        everyTuesday: false,
+        everyWednesday: false,
+        everyThursday: false,
+        everyFriday: false,
+        everySaturday: false,
+        everySunday: false,
+      },
+    ];
+
+    const ptsRes = await api.setPricesSchedulerConfiguration(schedules);
+    if (!ptsRes.ok) {
+      throw new Error(ptsRes.error || 'No se pudo programar el precio en el PTS-2.');
+    }
   };
 
   const handleCancelScheduledPrice = (id: string) => {
@@ -1986,29 +2304,10 @@ export default function App() {
 
   // Load users, active shift, and scheduled prices from backend on mount
   useEffect(() => {
-    // Fetch pumps configuration
+    // Fetch pumps configuration (mapeo persistido en BD)
     api.getPumpsConfiguration().then(res => {
-      if (res.ok && res.data) {
-        const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene', 'LPG'];
-        const mappedPumps = res.data.map((p: any) => {
-          const nozzles = [];
-          const count = p.nozzles_count || 3;
-          for (let i = 0; i < count; i++) {
-            nozzles.push({
-              fuelType: fuelGrades[i] || 'Regular Unleaded',
-              status: 'Idle' as PumpStatus,
-              currentAmount: 0.0,
-              currentVolume: 0.0,
-              progressPercent: 0,
-            });
-          }
-          return {
-            id: p.id,
-            name: p.name || `Cara ${p.id}`,
-            nozzles: nozzles,
-          };
-        });
-        setDispensers(mappedPumps);
+      if (res.ok && Array.isArray(res.data) && res.data.length > 0) {
+        setDispensers((res.data as any[]).map(mapPumpConfigToDispenser));
       }
     });
 
@@ -2513,10 +2812,8 @@ export default function App() {
     const nozzleIndex = fuelGrades.indexOf(fuelType);
     const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
 
-    // Convert volume to liters only if unitMeasure is Galones
-    const volumeLiters = unitMeasure === 'Galones' ? volume * 3.78541 : volume;
-
-    api.saveTransaction(pumpId, numericTrxId, nozzleNumber, volumeLiters, amount, paymentType).then(res => {
+    // Sin conversión Gal↔L: el valor se guarda tal cual (la etiqueta es solo visual).
+    api.saveTransaction(pumpId, numericTrxId, nozzleNumber, volume, amount, paymentType).then(res => {
       if (res.ok) {
         console.log(`Transaction ${trxId} persisted in Postgres successfully`);
       }
@@ -2536,7 +2833,6 @@ export default function App() {
     const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
     const nozzleIndex = fuelGrades.indexOf(fuelType);
     const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
-    const volumeLiters = unitMeasure === 'Galones' ? volume * 3.78541 : volume;
     const processPayload = {
       payment_type: paymentType,
       status: 'Completed',
@@ -2547,7 +2843,7 @@ export default function App() {
 
     api.processPendingTransaction(pumpId, trxId, processPayload).then(async res => {
       if (!res.ok) {
-        const pendingRes = await api.savePendingTransaction(pumpId, trxId, nozzleNumber, volumeLiters, amount, fuelType);
+        const pendingRes = await api.savePendingTransaction(pumpId, trxId, nozzleNumber, volume, amount, fuelType);
         if (pendingRes.ok) {
           await api.processPendingTransaction(pumpId, trxId, processPayload);
         } else {
@@ -2629,9 +2925,8 @@ export default function App() {
       const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
       const nozzleIndex = fuelGrades.indexOf(fuelType);
       const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
-      const volumeLiters = unitMeasure === 'Galones' ? volume * 3.78541 : volume;
-      console.log(`[completeFuelingJob] Guardando venta en cola en BD: pump=${dispenserId}, trx=${randomTrxId}, nozzle=${nozzleNumber}, volume=${volumeLiters}, amount=${amount}`);
-      api.savePendingTransaction(dispenserId, randomTrxId, nozzleNumber, volumeLiters, amount, fuelType).then(res => {
+      console.log(`[completeFuelingJob] Guardando venta en cola en BD: pump=${dispenserId}, trx=${randomTrxId}, nozzle=${nozzleNumber}, volume=${volume}, amount=${amount}`);
+      api.savePendingTransaction(dispenserId, randomTrxId, nozzleNumber, volume, amount, fuelType).then(res => {
         if (res.ok) {
           console.log(`[completeFuelingJob] Venta en cola ${randomTrxId} guardada en BD exitosamente.`);
         } else {
@@ -3229,11 +3524,7 @@ export default function App() {
           if (mode === 'Full') {
             api.postpayAuthorizePump(pumpId, nozzleNumber);
           } else {
-            let finalLimit = valLimit;
-            if (limitType === 'Volume' && valLimit !== undefined && unitMeasure === 'Galones') {
-              finalLimit = valLimit * 3.78541;
-            }
-            api.authorizePump(pumpId, nozzleNumber, mode === 'Limit' ? limitType : undefined, mode === 'Limit' ? finalLimit : undefined);
+            api.authorizePump(pumpId, nozzleNumber, mode === 'Limit' ? limitType : undefined, mode === 'Limit' ? valLimit : undefined);
           }
 
           const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -3265,18 +3556,11 @@ export default function App() {
       <PumpConfigWizard
         isOpen={isAddCaraModalOpen}
         nextPumpId={dispensers.length > 0 ? Math.max(...dispensers.map(d => d.id)) + 1 : 1}
-        onSuccess={({ id, name, nozzlesCount }) => {
-          const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
+        onSuccess={({ id, name, nozzles }) => {
           const newDispenser: DispenserState = {
             id,
             name,
-            nozzles: Array.from({ length: nozzlesCount }, (_, i) => ({
-              fuelType: fuelGrades[i] || 'Regular Unleaded',
-              status: 'Idle' as PumpStatus,
-              currentAmount: 0.0,
-              currentVolume: 0.0,
-              progressPercent: 0,
-            })),
+            nozzles: nozzles.map((n) => idleNozzle(mapNameToFuelType(n.fuelType || n.name, n.fuelGradeId))),
           };
           setDispensers(prev => [...prev, newDispenser]);
 

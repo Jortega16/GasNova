@@ -4,15 +4,15 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { PriceConfig, ScheduledPrice, FuelType } from '../types';
+import type { PriceConfig, ScheduledPrice, FuelType } from '../types';
 import { Sparkles, Edit2, Trash2, Calendar, Clock, Plus, HelpCircle, Check, ArrowRight, AlertCircle, Download, Upload, Cpu, X } from 'lucide-react';
 import { api } from '../api';
 
 interface PriceConfigTabProps {
   prices: PriceConfig[];
   scheduledPrices: ScheduledPrice[];
-  onUpdatePrice: (fuelType: FuelType, newPrice: number) => void;
-  onAddScheduledPrice: (dateTime: string, fuelType: FuelType, newPrice: number) => void;
+  onUpdatePrice: (fuelType: FuelType, newPrice: number) => void | Promise<void>;
+  onAddScheduledPrice: (dateTime: string, fuelType: FuelType, newPrice: number) => void | Promise<void>;
   onCancelScheduledPrice: (id: string) => void;
   onFetchPricesFromPts2?: () => Promise<void>;
   onSyncPricesToPts2?: () => Promise<void>;
@@ -25,6 +25,9 @@ const fuelTypeTranslations: { [key: string]: string } = {
   'Kerosene': 'Queroseno',
   'LPG': 'LPG'
 };
+
+const displayFuelName = (p: PriceConfig): string =>
+  (p.name && p.name.trim()) || fuelTypeTranslations[p.fuelType] || p.fuelType;
 
 export default function PriceConfigTab({
   prices,
@@ -173,20 +176,27 @@ export default function PriceConfigTab({
     }
   }, [prices, quickFuelType, schedFuelType]);
 
-  const handleQuickApply = (e: React.FormEvent) => {
+  const handleQuickApply = async (e: React.FormEvent) => {
     e.preventDefault();
     const val = parseFloat(quickPrice);
     if (isNaN(val) || val <= 0) {
       alert('Por favor ingrese un precio numérico válido (mayor a 0).');
       return;
     }
-    onUpdatePrice(quickFuelType, val);
-    setQuickSuccess(true);
-    setQuickPrice('');
-    setTimeout(() => setQuickSuccess(false), 3000);
+    try {
+      await onUpdatePrice(quickFuelType, val);
+      setQuickSuccess(true);
+      setQuickPrice('');
+      setSyncMessage({ type: 'success', text: '✓ Precio aplicado en GasNova y enviado al PTS-2.' });
+      setTimeout(() => setQuickSuccess(false), 3000);
+      setTimeout(() => setSyncMessage(null), 4000);
+    } catch (err: any) {
+      setSyncMessage({ type: 'error', text: `✗ No se pudo aplicar en PTS-2: ${err.message || err}` });
+      setTimeout(() => setSyncMessage(null), 6000);
+    }
   };
 
-  const handleAddScheduleSubmit = (e: React.FormEvent) => {
+  const handleAddScheduleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const val = parseFloat(schedPrice);
     if (!schedDate || !schedTime || isNaN(val) || val <= 0) {
@@ -195,15 +205,22 @@ export default function PriceConfigTab({
     }
     
     const formattedDateTime = `${schedDate} ${schedTime}`;
-    onAddScheduledPrice(formattedDateTime, schedFuelType, val);
-    setSchedSuccess(true);
-    setSchedPrice('');
-    setSchedDate('');
-    setSchedTime('');
-    setTimeout(() => {
-      setSchedSuccess(false);
-      setShowScheduleForm(false);
-    }, 2000);
+    try {
+      await onAddScheduledPrice(formattedDateTime, schedFuelType, val);
+      setSchedSuccess(true);
+      setSchedPrice('');
+      setSchedDate('');
+      setSchedTime('');
+      setSyncMessage({ type: 'success', text: '✓ Precio programado en GasNova y en el scheduler del PTS-2.' });
+      setTimeout(() => {
+        setSchedSuccess(false);
+        setShowScheduleForm(false);
+      }, 2000);
+      setTimeout(() => setSyncMessage(null), 5000);
+    } catch (err: any) {
+      setSyncMessage({ type: 'error', text: `✗ No se pudo programar en PTS-2: ${err.message || err}` });
+      setTimeout(() => setSyncMessage(null), 6000);
+    }
   };
 
   const startEditInline = (type: FuelType, curPrice: number) => {
@@ -211,11 +228,18 @@ export default function PriceConfigTab({
     setEditPriceVal(curPrice.toFixed(2));
   };
 
-  const saveEditInline = () => {
+  const saveEditInline = async () => {
     if (editingType) {
       const val = parseFloat(editPriceVal);
       if (!isNaN(val) && val > 0) {
-        onUpdatePrice(editingType, val);
+        try {
+          await onUpdatePrice(editingType, val);
+          setSyncMessage({ type: 'success', text: '✓ Precio actualizado y enviado al PTS-2.' });
+          setTimeout(() => setSyncMessage(null), 4000);
+        } catch (err: any) {
+          setSyncMessage({ type: 'error', text: `✗ Error al enviar al PTS-2: ${err.message || err}` });
+          setTimeout(() => setSyncMessage(null), 6000);
+        }
       }
       setEditingType(null);
     }
@@ -227,7 +251,7 @@ export default function PriceConfigTab({
     setSyncMessage(null);
     try {
       await onFetchPricesFromPts2();
-      setSyncMessage({ type: 'success', text: '✓ Precios importados del PTS-2 y guardados en BD con éxito.' });
+      setSyncMessage({ type: 'success', text: '✓ Precios y nombres importados del PTS-2 (GetFuelGradesConfiguration) y guardados en BD.' });
       setTimeout(() => setSyncMessage(null), 4000);
     } catch (err: any) {
       setSyncMessage({ type: 'error', text: `✗ Error al obtener precios: ${err.message || err}` });
@@ -268,7 +292,7 @@ export default function PriceConfigTab({
                 onClick={handleFetchPts2}
                 disabled={isFetchingPts2 || isSyncingPts2}
                 className="flex items-center gap-1.5 bg-[#93b9ff]/20 hover:bg-[#93b9ff]/35 disabled:opacity-50 text-white text-xs font-bold py-1.5 px-3 rounded-lg border border-[#93b9ff]/30 cursor-pointer transition-colors shadow-sm"
-                title="Obtiene los precios actuales del patio de bombas real"
+                title="Importa nombres y precios del PTS-2 (GetFuelGradesConfiguration)"
               >
                 <Download className="w-3.5 h-3.5" />
                 {isFetchingPts2 ? 'Obteniendo...' : 'Importar de PTS-2'}
@@ -318,7 +342,7 @@ export default function PriceConfigTab({
                             p.fuelType === 'Regular Unleaded' ? 'bg-[#355e9e]' :
                             p.fuelType === 'Premium Unleaded' ? 'bg-amber-600' : 'bg-emerald-600'
                           }`} />
-                          <span>{fuelTypeTranslations[p.fuelType] || p.fuelType}</span>
+                          <span>{displayFuelName(p)}</span>
                         </div>
                         {(p as any).tankNames && (
                           <span className="text-[10px] text-slate-400 font-mono mt-0.5 ml-5">
@@ -409,7 +433,7 @@ export default function PriceConfigTab({
                 >
                   {prices.map(p => (
                     <option key={p.fuelType} value={p.fuelType}>
-                      {fuelTypeTranslations[p.fuelType] || p.fuelType}
+                      {displayFuelName(p)}
                     </option>
                   ))}
                 </select>
@@ -692,7 +716,7 @@ export default function PriceConfigTab({
               >
                 {prices.map(p => (
                   <option key={p.fuelType} value={p.fuelType} className="bg-[#002046]">
-                    {fuelTypeTranslations[p.fuelType] || p.fuelType}
+                    {displayFuelName(p)}
                   </option>
                 ))}
               </select>
