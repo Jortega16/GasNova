@@ -56,6 +56,13 @@ elif [ "$(uname -s)" = "Linux" ]; then
     echo ""
     echo "▶ WSL2 detectado (Docker Desktop en Windows) — gasnova-mdns no sirve aquí, su red host es la VM interna de WSL2, no la red física."
     echo "  Para que esta PC responda en gasnova.local, renómbrala como \"gasnova\" desde Configuración de Windows (no dentro de WSL)."
+    # Si una instalación previa (con un install.sh más viejo) llegó a activar
+    # el profile mdns aquí, ese contenedor quedó con restart: unless-stopped
+    # — simplemente no volver a pasar --profile mdns en "up" no lo detiene,
+    # Compose ignora los servicios de profiles inactivos en vez de pararlos.
+    if docker compose rm -sf gasnova-mdns >/dev/null 2>&1; then
+        echo "  Se detuvo gasnova-mdns (había quedado activo de una instalación anterior)."
+    fi
 fi
 
 echo ""
