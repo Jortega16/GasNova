@@ -57,7 +57,15 @@ class FakePumps:
         return {"Closed": pump_id}
 
     def get_totals(self, pump_id, nozzle=None, fuel_grade_id=None):
-        return FakeModel({"Pump": pump_id, "Totals": []})
+        self.calls.append(("get_totals", pump_id, nozzle, fuel_grade_id))
+        n = nozzle or 1
+        # Totales electrónicos simulados por manguera (protocolo PumpTotals.Volume/Amount)
+        return FakeModel({
+            "Pump": pump_id,
+            "Nozzle": n,
+            "Volume": 1000.0 * n,
+            "Amount": 5000.0 * n,
+        })
 
     def get_prices(self, pump_id):
         return {"Pump": pump_id, "Prices": []}
@@ -295,3 +303,28 @@ def test_alerts_endpoint_rejects_invalid_datetime():
         }
         for error in response.json()["detail"]
     )
+
+
+def test_pump_counters_sums_nozzle_totals_via_pump_get_totals():
+    """GET /counters debe usar PumpGetTotals (Volume/Amount), no GetPumpStatus."""
+    fake = FakeClient()
+    client = make_test_client(fake)
+
+    # Sin config local → consulta mangueras 1..6 (default)
+    response = client.get("/pumps/1/counters")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["source"] == "PumpGetTotals"
+    assert data["pump_id"] == 1
+    # 1000+2000+...+6000 = 21000 ; amounts 5000*n
+    assert data["total_volume"] == 21000.0
+    assert data["total_amount"] == 105000.0
+    assert len(data["nozzles"]) == 6
+    assert fake.pumps.calls == [
+        ("get_totals", 1, 1, None),
+        ("get_totals", 1, 2, None),
+        ("get_totals", 1, 3, None),
+        ("get_totals", 1, 4, None),
+        ("get_totals", 1, 5, None),
+        ("get_totals", 1, 6, None),
+    ]

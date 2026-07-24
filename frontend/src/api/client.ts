@@ -622,6 +622,9 @@ export const api = {
     pump_id: number;
     total_volume: number;
     total_amount: number;
+    nozzles?: Array<{ nozzle: number; volume: number; amount: number }>;
+    source?: string;
+    errors?: string[] | null;
   }>> {
     return apiFetch(`pumps/${pumpId}/counters`);
   },

@@ -22,6 +22,14 @@ class PumpStatus(JsonPTSModel):
 class PumpTotals(JsonPTSModel):
     pump: int | None = Field(default=None, validation_alias=AliasChoices("Pump", "PumpId", "PumpID"))
     nozzle: int | None = Field(default=None, validation_alias=AliasChoices("Nozzle", "NozzleId"))
+    volume: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("Volume", "TotalVolume", "Quantity"),
+    )
+    amount: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("Amount", "TotalAmount", "Money"),
+    )
     totals: Any | None = Field(default=None, validation_alias=AliasChoices("Totals", "Totalizers", "Counters"))
 
 

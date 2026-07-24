@@ -1001,24 +1001,77 @@ def delete_pending_transaction(
     "/{pump_id}/counters",
     response_model=CommandResponse,
     summary="Contadores mecánicos del surtidor",
-    description="Intenta leer TotalVolume y TotalAmount del PTS-2. Si no están disponibles devuelve 0.",
+    description=(
+        "Recupera los totalizadores electrónicos del PTS-2 vía **PumpGetTotals** → "
+        "**PumpTotals** (Volume/Amount) por cada manguera configurada, y suma el total "
+        "de la cara. Equivale al flujo del demo jsonPTS (no usar PumpGetStatus)."
+    ),
 )
 def get_pump_counters(
     pump_id: int = Path(ge=1),
     client: PTS2Client = Depends(get_pts2_client),
+    db: Session = Depends(get_db),
 ) -> CommandResponse:
-    """Lee los contadores acumulados (odómetros mecánicos) del surtidor desde el PTS-2."""
+    """Lee los odómetros electrónicos acumulados del surtidor (suma por manguera)."""
+    config = (
+        db.query(PumpConfiguration)
+        .filter(PumpConfiguration.pump_id == pump_id)
+        .first()
+    )
+    if config and config.nozzles_json and isinstance(config.nozzles_json, list) and config.nozzles_json:
+        nozzle_numbers = sorted({
+            int(n.get("nozzle") or n.get("Nozzle") or (i + 1))
+            for i, n in enumerate(config.nozzles_json)
+            if isinstance(n, dict)
+        }) or list(range(1, (config.nozzles_count or 1) + 1))
+    else:
+        nozzle_count = int(config.nozzles_count) if config and config.nozzles_count else 6
+        nozzle_numbers = list(range(1, max(1, nozzle_count) + 1))
+
+    nozzles_out: list[dict[str, Any]] = []
+    total_volume = 0.0
+    total_amount = 0.0
+    errors: list[str] = []
+
     try:
-        raw = client.request_data("GetPumpStatus", {"Pump": pump_id})
-        total_volume = float(raw.get("TotalVolume") or 0)
-        total_amount = float(raw.get("TotalAmount") or 0)
-    except Exception:
-        total_volume = 0.0
-        total_amount = 0.0
+        for nozzle in nozzle_numbers:
+            try:
+                totals = client.pumps.get_totals(pump_id, nozzle=nozzle)
+                raw = totals.to_dict() if hasattr(totals, "to_dict") else (
+                    totals.model_dump(by_alias=True, exclude_none=True)
+                    if hasattr(totals, "model_dump") else dict(totals or {})
+                )
+                vol = float(
+                    raw.get("Volume")
+                    or raw.get("TotalVolume")
+                    or getattr(totals, "volume", None)
+                    or 0
+                )
+                amt = float(
+                    raw.get("Amount")
+                    or raw.get("TotalAmount")
+                    or getattr(totals, "amount", None)
+                    or 0
+                )
+                nozzles_out.append({
+                    "nozzle": nozzle,
+                    "volume": vol,
+                    "amount": amt,
+                })
+                total_volume += vol
+                total_amount += amt
+            except Exception as exc:
+                errors.append(f"nozzle {nozzle}: {exc}")
+                # Si la manguera no existe en el PTS, no bloquear el resto
+                continue
     finally:
         _close(client)
+
     return CommandResponse(data={
         "pump_id": pump_id,
-        "total_volume": total_volume,
-        "total_amount": total_amount,
+        "total_volume": round(total_volume, 3),
+        "total_amount": round(total_amount, 3),
+        "nozzles": nozzles_out,
+        "errors": errors or None,
+        "source": "PumpGetTotals",
     })
