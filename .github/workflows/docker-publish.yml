@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags:
       - "v*"          # v1.0.0, v1.2.3, etc.
+  workflow_dispatch:  # permite republicar :latest sin un commit vacío
 
 env:
   REGISTRY: ghcr.io
