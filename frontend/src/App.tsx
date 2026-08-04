@@ -10,7 +10,7 @@ import CaraCard from './components/CaraCard';
 import RecentTransactions from './components/RecentTransactions';
 import { DispenserState, TankState, PriceConfig, ScheduledPrice, Transaction, ShiftAlert, ShiftDetails, FuelType, NozzleState, PaymentMethod, UserProfile, NozzleTransaction, PumpStatus } from './types';
 import { INITIAL_DISPENSERS, INITIAL_TANKS, INITIAL_PRICES, INITIAL_SCHEDULED_PRICES, INITIAL_SHIFTS, INITIAL_USERS } from './data';
-import { AlertOctagon, Fuel, Printer, Lock, Unlock, RefreshCw, Settings, Power } from 'lucide-react';
+import { AlertOctagon, Fuel, Printer, Lock, Unlock, RefreshCw, Settings, Power, Gauge } from 'lucide-react';
 import LoginScreen from './components/LoginScreen';
 import { api, printReceiptWindow } from './api';
 import SimUniPumpPanel from './components/SimUniPumpPanel';
@@ -19,6 +19,7 @@ import PreAuthDialog from './components/PreAuthDialog';
 import PumpConfigWizard from './components/PumpConfigWizard';
 import ShiftReceiptModal from './components/ShiftReceiptModal';
 import ShiftCloseConfirmModal from './components/ShiftCloseConfirmModal';
+import PumpCountersModal from './components/PumpCountersModal';
 import NozzleTransactionsModal from './components/NozzleTransactionsModal';
 import { useSystemSettings } from './hooks/useSystemSettings';
 import { getAuthToken, getStoredAuthUser, setAuthSession, clearAuthSession, UNAUTHORIZED_EVENT } from './auth';
@@ -688,6 +689,8 @@ export default function App() {
   const [pendingMechCounters, setPendingMechCounters] = useState<Record<number, { vol: number; amt: number }>>({});
   const [showShiftReceipt, setShowShiftReceipt] = useState<boolean>(false);
   const [showShiftCloseConfirm, setShowShiftCloseConfirm] = useState<boolean>(false);
+  const [shiftCloseError, setShiftCloseError] = useState<string | null>(null);
+  const [showPumpCounters, setShowPumpCounters] = useState<boolean>(false);
 
   const handleManualSync = async () => {
     // Misma recuperación SD automática, forzada por el operador
@@ -2486,55 +2489,73 @@ export default function App() {
     }
   }, [quickSwitchPin, pendingSwitchUser]);
 
-  const executeShiftClosureFinal = (meters: { [key: string]: string }, mechCounters: Record<number, { vol: number; amt: number }> = {}) => {
+  // Extrae un mensaje legible del error crudo de apiFetch, que para /shifts/close
+  // trae el detail de FastAPI como texto JSON (ej. el 409 de despachos pendientes).
+  const parseCloseShiftError = (rawError?: string): string => {
+    if (!rawError) return 'Error desconocido al comunicarse con el servidor.';
+    const jsonStart = rawError.indexOf('{');
+    if (jsonStart === -1) return rawError;
+    try {
+      const parsed = JSON.parse(rawError.slice(jsonStart));
+      const detail = parsed?.detail;
+      if (typeof detail === 'string') return detail;
+      if (detail && typeof detail === 'object') {
+        const count = Array.isArray(detail.pending_transactions) ? detail.pending_transactions.length : undefined;
+        if (detail.message) {
+          return count
+            ? `${detail.message} (${count} despacho${count === 1 ? '' : 's'} pendiente${count === 1 ? '' : 's'} sin cobrar).`
+            : detail.message;
+        }
+      }
+    } catch {
+      // No era JSON parseable — usar el texto crudo tal cual.
+    }
+    return rawError;
+  };
+
+  const executeShiftClosureFinal = async (meters: { [key: string]: string }, mechCounters: Record<number, { vol: number; amt: number }> = {}) => {
+    // Snapshot del estado actual ANTES de tocar nada — si el cierre falla en
+    // el backend, se restaura tal cual para no dejar el POS en un estado
+    // optimista que nunca ocurrió de verdad.
+    const dispensersSnapshot = dispensers;
     const expiredTransactions: Transaction[] = [];
-
-    // 1. Block all dispensers and collect pending transfers
-    setDispensers(prev => prev.map(d => {
-      return {
-        ...d,
-        isBlocked: true,
-        nozzles: d.nozzles.map(n => {
-          const trxs = n.pendingTransactions || [];
-          trxs.forEach(pt => {
-            expiredTransactions.push({
-              id: pt.id,
-              dateTime: pt.dateTime,
-              pumpId: d.id,
-              pumpName: `Cara ${d.id} (${n.fuelType === 'Regular Unleaded' ? 'Regular' : n.fuelType === 'Premium Unleaded' ? 'Super' : 'Diesel'})`,
-              volume: pt.volume,
-              amount: pt.amount,
-              fuelType: pt.fuelType,
-              paymentType: 'Cash'
-            });
+    dispensersSnapshot.forEach(d => {
+      d.nozzles.forEach(n => {
+        (n.pendingTransactions || []).forEach(pt => {
+          expiredTransactions.push({
+            id: pt.id,
+            dateTime: pt.dateTime,
+            pumpId: d.id,
+            pumpName: `Cara ${d.id} (${n.fuelType === 'Regular Unleaded' ? 'Regular' : n.fuelType === 'Premium Unleaded' ? 'Super' : 'Diesel'})`,
+            volume: pt.volume,
+            amount: pt.amount,
+            fuelType: pt.fuelType,
+            paymentType: 'Cash'
           });
-          return {
-            ...n,
-            status: 'Blocked',
-            pendingTransactions: []
-          };
-        })
-      };
-    }));
-
-    if (expiredTransactions.length > 0) {
-      setTransactions(prev => [...expiredTransactions, ...prev]);
-
-      // Move pending rows into the final backend ledger
-      expiredTransactions.forEach(tx => {
-        processPendingTransactionInBackend(tx.pumpId, tx.id, tx.fuelType, tx.volume, tx.amount, tx.paymentType, 'Bajada');
+        });
       });
+    });
+
+    // 1. Bloquea todas las caras de inmediato — evita que arranque un despacho
+    // nuevo mientras se intenta el cierre. Se revierte si el cierre falla.
+    setDispensers(prev => prev.map(d => ({
+      ...d,
+      isBlocked: true,
+      nozzles: d.nozzles.map(n => ({ ...n, status: 'Blocked', pendingTransactions: [] })),
+    })));
+
+    // 2. Liquida los despachos pendientes conocidos localmente y ESPERA a que
+    // terminen — el backend rechaza el cierre si todavía hay pendientes sin
+    // cobrar, así que mandar el cierre antes de que esto termine es una
+    // condición de carrera real (a veces cierra, a veces no).
+    if (expiredTransactions.length > 0) {
+      await Promise.all(expiredTransactions.map(tx =>
+        processPendingTransactionInBackend(tx.pumpId, tx.id, tx.fuelType, tx.volume, tx.amount, tx.paymentType, 'Bajada')
+      ));
     }
 
-    // 2. Set shift status to 'Closed' and call closeShift in backend
-    const endTimeStr = new Date().toLocaleString();
-    setShiftDetails(prev => ({
-      ...prev,
-      status: 'Closed',
-      endTime: endTimeStr
-    }));
-
     // Calculate totals for physical print closure receipt (combining regular and expired transactions)
+    const endTimeStr = new Date().toLocaleString();
     const allShiftTransactions = [...expiredTransactions, ...transactions];
     const regularSales = allShiftTransactions.filter(t => t.fuelType === 'Regular Unleaded');
     const premiumSales = allShiftTransactions.filter(t => t.fuelType === 'Premium Unleaded');
@@ -2562,9 +2583,8 @@ export default function App() {
       { method: 'Efectivo', amount: allShiftTransactions.filter(t => t.paymentType === 'Cash').reduce((sum, t) => sum + t.amount, 0) }
     ];
 
-    // Trigger physical print of shift closure
     const closedShiftName = getShiftNameFromId(shiftDetails.shiftId, shiftBrackets);
-    const counterBreakdown = dispensers.map(d => ({
+    const counterBreakdown = dispensersSnapshot.map(d => ({
       pump_id:        d.id,
       pump_name:      d.name,
       system_volume:  allShiftTransactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.volume, 0),
@@ -2572,6 +2592,48 @@ export default function App() {
       mech_amount:    mechCounters[d.id]?.amt ?? 0,
       dispatch_count: allShiftTransactions.filter(t => t.pumpId === d.id).length,
     }));
+
+    // 3. El cierre real — se espera la respuesta y se revisa res.ok antes de
+    // dar por hecho que pasó nada. Antes esto no se revisaba: el POS mostraba
+    // "Cierre Exitoso" y el recibo aunque el backend hubiera rechazado el
+    // cierre (turno pendiente sin cobrar, sin turno activo, etc.), dejando el
+    // turno realmente abierto en el backend mientras la pantalla decía otra cosa.
+    const res = await api.closeShift(shiftDetails.shiftId, shiftDetails.operatorName, endTimeStr, counterBreakdown);
+
+    if (!res.ok) {
+      setDispensers(dispensersSnapshot);
+      setIsShiftClosing(false);
+      const message = parseCloseShiftError(res.error);
+      setShiftCloseError(message);
+
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const failAlert: ShiftAlert = {
+        id: `AL-SH-CLOSE-FAIL-${Math.random()}`,
+        dateTime: `Hoy ${timeStr}`,
+        pumpName: `Sistema`,
+        volume: '—',
+        amount: '—',
+        paymentType: 'System',
+        message: `❌ No se pudo cerrar el turno: ${message}`,
+        isCustomNote: true
+      };
+      setAlerts(prev => [failAlert, ...prev]);
+      return;
+    }
+
+    setShiftCloseError(null);
+
+    // 4. Éxito confirmado por el backend — ahora sí se aplican los cambios locales.
+    if (expiredTransactions.length > 0) {
+      setTransactions(prev => [...expiredTransactions, ...prev]);
+    }
+
+    setShiftDetails(prev => ({
+      ...prev,
+      status: 'Closed',
+      endTime: endTimeStr
+    }));
+
     api.printClosure({
       shift_id:          shiftDetails.shiftId,
       shift_name:        closedShiftName,
@@ -2586,45 +2648,39 @@ export default function App() {
       counter_breakdown: counterBreakdown,
     }).catch(err => console.error("Error printing physical closure:", err));
 
-    api.closeShift(shiftDetails.shiftId, shiftDetails.operatorName, endTimeStr, counterBreakdown).then(res => {
-      // Desbloquear todas las caras al confirmar el cierre en el backend
-      setDispensers(prev => prev.map(d => ({
-        ...d,
-        isBlocked: false,
-        nozzles: d.nozzles.map(n => ({
-          ...n,
-          status: 'Idle' as PumpStatus,
-          currentAmount: 0,
-          currentVolume: 0,
-          progressPercent: 0,
-          pendingTransactions: [],
-        })),
-      })));
+    // Desbloquear todas las caras para el turno nuevo
+    setDispensers(prev => prev.map(d => ({
+      ...d,
+      isBlocked: false,
+      nozzles: d.nozzles.map(n => ({
+        ...n,
+        status: 'Idle' as PumpStatus,
+        currentAmount: 0,
+        currentVolume: 0,
+        progressPercent: 0,
+        pendingTransactions: [],
+      })),
+    })));
 
-      if (res.ok && res.data) {
-        setNextShiftData(res.data.new_shift);
-        if (res.data.new_shift) {
-          const nextShiftName = getShiftNameFromId(res.data.new_shift.shift_id, shiftBrackets);
-          api.printNextShift({
-            shift_id:            res.data.new_shift.shift_id,
-            shift_name:          nextShiftName,
-            previous_shift_id:   shiftDetails.shiftId,
-            previous_shift_name: closedShiftName,
-            operator_name:       res.data.new_shift.operator_name,
-            start_time:          res.data.new_shift.start_time
-          }).catch(err => console.error("Error printing physical next shift:", err));
-        }
+    if (res.data) {
+      setNextShiftData(res.data.new_shift);
+      if (res.data.new_shift) {
+        const nextShiftName = getShiftNameFromId(res.data.new_shift.shift_id, shiftBrackets);
+        api.printNextShift({
+          shift_id:            res.data.new_shift.shift_id,
+          shift_name:          nextShiftName,
+          previous_shift_id:   shiftDetails.shiftId,
+          previous_shift_name: closedShiftName,
+          operator_name:       res.data.new_shift.operator_name,
+          start_time:          res.data.new_shift.start_time
+        }).catch(err => console.error("Error printing physical next shift:", err));
       }
-    });
+    }
 
-    // 3. Clear closing temporary states
     setIsShiftClosing(false);
 
-    // 4. Register closure alert in log
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    
-    // Add custom note log if some transactions were forced down
-    const forcedMsg = expiredTransactions.length > 0 
+    const forcedMsg = expiredTransactions.length > 0
       ? ` y se liquidaron automáticamente ${expiredTransactions.length} despacho(s) pendiente(s) de manguera a caja.`
       : '.';
 
@@ -2640,7 +2696,6 @@ export default function App() {
     };
     setAlerts(prev => [customAlert, ...prev]);
 
-    // 5. Open the modal at the top level
     setShowShiftReceipt(true);
   };
 
@@ -2829,7 +2884,7 @@ export default function App() {
     paymentType: string,
     documentType?: 'Bajada' | 'Ticket' | 'Factura',
     documentNumber?: string
-  ) => {
+  ): Promise<void> => {
     const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
     const nozzleIndex = fuelGrades.indexOf(fuelType);
     const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
@@ -2841,7 +2896,11 @@ export default function App() {
       cashier_name: currentUser?.name,
     };
 
-    api.processPendingTransaction(pumpId, trxId, processPayload).then(async res => {
+    // Se retorna la promesa (antes era "fire and forget") para que el cierre
+    // de turno pueda esperar a que estas liquidaciones terminen de verdad
+    // antes de pedirle al backend que cierre — si no, /shifts/close puede
+    // encontrar el pendiente todavía sin procesar y rechazar el cierre.
+    return api.processPendingTransaction(pumpId, trxId, processPayload).then(async res => {
       if (!res.ok) {
         const pendingRes = await api.savePendingTransaction(pumpId, trxId, nozzleNumber, volume, amount, fuelType);
         if (pendingRes.ok) {
@@ -3018,6 +3077,14 @@ export default function App() {
                       <span>Parada de Emergencia General</span>
                     </button>
                   )}
+                  <button
+                    onClick={() => setShowPumpCounters(true)}
+                    className="bg-slate-700/80 hover:bg-slate-600/80 text-slate-300 hover:text-white font-sans font-semibold text-[11px] py-2 px-3.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow border border-slate-600/40 transition-all"
+                    title="Ver los totalizadores electrónicos del PTS-2 por manguera, sin iniciar un cierre de turno"
+                  >
+                    <Gauge className="w-3.5 h-3.5" />
+                    <span>Ver Contadores</span>
+                  </button>
                   {can('shift.close') && (
                     <button
                       onClick={() => setShowShiftCloseConfirm(true)}
@@ -3079,6 +3146,32 @@ export default function App() {
                       className="bg-amber-600 hover:bg-amber-700 text-white font-sans font-bold text-[10px] uppercase px-3 py-1.5 rounded transition-all shadow-sm cursor-pointer"
                     >
                       Cancelar Cierre
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {shiftCloseError && (
+                <div className="bg-gradient-to-r from-red-500/15 via-red-600/10 to-red-500/5 border-2 border-red-300 text-slate-800 rounded-xl p-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4" id="shift-closure-error-banner">
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl shrink-0">⛔</span>
+                    <div>
+                      <p className="font-sans font-extrabold text-xs uppercase tracking-wide text-red-900 flex items-center gap-1.5">
+                        <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-600"></span>
+                        NO SE PUDO CERRAR EL TURNO
+                      </p>
+                      <p className="text-xs text-slate-600 mt-1">{shiftCloseError}</p>
+                      <p className="text-[10px] text-slate-500">
+                        El turno sigue activo — corrige lo indicado (ej. despachos pendientes sin cobrar) e inténtalo de nuevo.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      onClick={() => setShiftCloseError(null)}
+                      className="bg-red-600 hover:bg-red-700 text-white font-sans font-bold text-[10px] uppercase px-3 py-1.5 rounded transition-all shadow-sm cursor-pointer"
+                    >
+                      Entendido
                     </button>
                   </div>
                 </div>
@@ -3593,6 +3686,14 @@ export default function App() {
           handleCloseShift({}, mechCounters);
         }}
         onCancel={() => setShowShiftCloseConfirm(false)}
+      />
+
+      <PumpCountersModal
+        show={showPumpCounters}
+        dispensers={dispensers}
+        unitMeasure={unitMeasure}
+        currencySymbol={currencySymbol}
+        onClose={() => setShowPumpCounters(false)}
       />
 
       <ShiftReceiptModal
