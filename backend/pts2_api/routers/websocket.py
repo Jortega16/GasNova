@@ -319,10 +319,17 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
         # arreglo completo que sí llegó por sondeo (ver live_state.py).
         pump_id_val = data.get("Pump")
         if pump_id_val is not None:
+            raw_nozzle = data.get("Nozzle")
+            if raw_nozzle is None:
+                raw_nozzle = data.get("NozzleUp")
+            try:
+                active_nozzle = int(raw_nozzle) if raw_nozzle is not None else None
+            except (TypeError, ValueError):
+                active_nozzle = None
             live_state.update_pump(
                 pump_id_val,
                 status_type=data.get("Status") or data.get("Type") or data.get("StatusType"),
-                nozzle=data.get("Nozzle"),
+                nozzle=active_nozzle,
                 volume=data.get("Volume"),
                 amount=data.get("Amount"),
                 transaction=data.get("Transaction"),

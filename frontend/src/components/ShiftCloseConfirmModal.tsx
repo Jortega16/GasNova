@@ -248,7 +248,7 @@ export default function ShiftCloseConfirmModal({
                 <TrendingUp className="w-5 h-5 text-[#93b9ff]" />
                 <div>
                   <p className="text-[10px] text-slate-300 uppercase tracking-wide font-semibold">Total Recaudado</p>
-                  <p className="text-[10px] text-slate-400">{totalVolume.toFixed(2)} {unit} despachados</p>
+                  <p className="text-[10px] text-slate-400">{totalVolume.toFixed(3)} {unit} despachados</p>
                 </div>
               </div>
               <p className="text-2xl font-black text-white font-mono">{currencySymbol}{totalAmount.toFixed(2)}</p>
@@ -286,7 +286,7 @@ export default function ShiftCloseConfirmModal({
                     </div>
                     <div className="text-right">
                       <p className="text-xs font-bold text-slate-800">{currencySymbol}{f.amt.toFixed(2)}</p>
-                      <p className="text-[10px] text-slate-400">{f.vol.toFixed(2)} {unit}</p>
+                      <p className="text-[10px] text-slate-400">{f.vol.toFixed(3)} {unit}</p>
                     </div>
                   </div>
                 ))}
@@ -316,7 +316,7 @@ export default function ShiftCloseConfirmModal({
                             <span className={`w-2 h-2 rounded-full shrink-0 ${FUEL_COLORS[r.fuelType] ?? 'bg-slate-400'}`} />
                             <span className="font-semibold text-slate-700 truncate max-w-[120px]">{r.pumpName}</span>
                           </td>
-                          <td className="px-3 py-1.5 text-right font-mono text-slate-600">{r.vol.toFixed(2)}</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-slate-600">{r.vol.toFixed(3)}</td>
                           <td className="px-3 py-1.5 text-right font-bold text-slate-800">{currencySymbol}{r.amt.toFixed(2)}</td>
                           <td className="px-3 py-1.5 text-right text-slate-400">{r.count}</td>
                         </tr>
@@ -359,21 +359,21 @@ export default function ShiftCloseConfirmModal({
                         <tr key={r.id} className="border-b border-neutral-100 last:border-0 hover:bg-slate-50">
                           <td className="px-3 py-1.5 font-semibold text-slate-700">{r.name}</td>
                           <td className="px-3 py-1.5 text-right font-mono text-slate-500 text-[11px]">
-                            {r.openingVol != null ? r.openingVol.toFixed(2) : '—'}
+                            {r.openingVol != null ? r.openingVol.toFixed(3) : '—'}
                           </td>
                           <td className="px-3 py-1.5 text-right font-mono text-slate-500 text-[11px]">
-                            {r.closingVol != null ? r.closingVol.toFixed(2) : '—'}
+                            {r.closingVol != null ? r.closingVol.toFixed(3) : '—'}
                           </td>
                           <td className="px-3 py-1.5 text-right font-mono text-slate-700 font-bold">
-                            {r.ptsDelta != null ? r.ptsDelta.toFixed(2) : '—'}
+                            {r.ptsDelta != null ? r.ptsDelta.toFixed(3) : '—'}
                           </td>
-                          <td className="px-3 py-1.5 text-right font-mono text-slate-600">{r.vol.toFixed(2)}</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-slate-600">{r.vol.toFixed(3)}</td>
                           <td className={`px-3 py-1.5 text-right font-bold ${
                             diff == null ? 'text-slate-400' :
                             diff === 0 ? 'text-emerald-600' : Math.abs(diff) < 0.05 ? 'text-emerald-600' :
                             diff > 0 ? 'text-amber-600' : 'text-red-600'
                           }`}>
-                            {diff == null ? '—' : `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}`}
+                            {diff == null ? '—' : `${diff >= 0 ? '+' : ''}${diff.toFixed(3)}`}
                           </td>
                         </tr>
                       );

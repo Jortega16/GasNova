@@ -705,7 +705,7 @@ export default function OtherTabs({
                       <td className="px-4 py-3 text-xs text-slate-500">{t.dateTime}</td>
                       <td className="px-4 py-3 text-xs font-mono text-slate-800 font-bold">{t.pumpName}</td>
                       <td className="px-4 py-3 font-semibold text-slate-800">{fuelTypeTranslations[t.fuelType] || t.fuelType}</td>
-                      <td className="px-4 py-3 text-right font-mono font-medium text-slate-600">{t.volume.toFixed(2)} {unitMeasure === 'Galones' ? 'G' : 'L'}</td>
+                      <td className="px-4 py-3 text-right font-mono font-medium text-slate-600">{t.volume.toFixed(3)} {unitMeasure === 'Galones' ? 'G' : 'L'}</td>
                       <td className="px-4 py-3 text-right font-mono font-bold text-slate-900">${t.amount.toFixed(2)}</td>
                       <td className="px-4 py-3 text-right text-xs">
                         <span className={`px-2 py-0.5 rounded font-mono font-bold ${

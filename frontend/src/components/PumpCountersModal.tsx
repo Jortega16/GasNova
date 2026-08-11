@@ -114,7 +114,7 @@ export default function PumpCountersModal({
                     <span className="text-[10px] text-slate-400">Cargando...</span>
                   ) : (
                     <span className="text-xs font-mono font-bold text-slate-800">
-                      {r.totalVolume.toFixed(2)} {unit} · {currencySymbol}{r.totalAmount.toFixed(2)}
+                      {r.totalVolume.toFixed(3)} {unit} · {currencySymbol}{r.totalAmount.toFixed(2)}
                     </span>
                   )}
                 </div>
@@ -143,7 +143,7 @@ export default function PumpCountersModal({
                             <td className="px-3 py-1.5 text-slate-600">
                               Boq. {n.nozzle}{fuel ? ` — ${FUEL_LABELS[fuel] ?? fuel}` : ""}
                             </td>
-                            <td className="px-3 py-1.5 text-right font-mono text-slate-600">{n.volume.toFixed(2)}</td>
+                            <td className="px-3 py-1.5 text-right font-mono text-slate-600">{n.volume.toFixed(3)}</td>
                             <td className="px-3 py-1.5 text-right font-mono text-slate-700">{currencySymbol}{n.amount.toFixed(2)}</td>
                           </tr>
                         );

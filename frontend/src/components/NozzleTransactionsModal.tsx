@@ -238,7 +238,7 @@ const NozzleTransactionsModal: React.FC<NozzleTransactionsModalProps> = ({
                           <span className="text-[9px] text-slate-400 font-mono">{tx.dateTime}</span>
                         </div>
                         <div className="text-[11px] text-slate-300">
-                          Volumen: <strong className="font-mono text-white">{tx.volume.toFixed(2)} {unitMeasure === 'Galones' ? 'Gls' : 'Lts'}</strong> | Combustible: <span className="text-indigo-300 font-medium">{fuelType === 'Regular Unleaded' ? 'Regular' : fuelType === 'Premium Unleaded' ? 'Súper' : 'Diesel'}</span>
+                          Volumen: <strong className="font-mono text-white">{tx.volume.toFixed(3)} {unitMeasure === 'Galones' ? 'Gls' : 'Lts'}</strong> | Combustible: <span className="text-indigo-300 font-medium">{fuelType === 'Regular Unleaded' ? 'Regular' : fuelType === 'Premium Unleaded' ? 'Súper' : 'Diesel'}</span>
                         </div>
                       </div>
 
@@ -309,7 +309,7 @@ const NozzleTransactionsModal: React.FC<NozzleTransactionsModalProps> = ({
 
                   <div className="border-t border-dashed border-slate-300 pt-1.5 space-y-1 text-slate-800">
                     <p><span className="font-bold">PRODUCTO:</span> {fuelType === 'Regular Unleaded' ? 'Regular 90 Oct' : fuelType === 'Premium Unleaded' ? 'Súper 95 Oct' : 'Diesel B5'}</p>
-                    <p><span className="font-bold">VOLUMEN:</span> {billingSuccessDoc.tx.volume.toFixed(2)} Gls</p>
+                    <p><span className="font-bold">VOLUMEN:</span> {billingSuccessDoc.tx.volume.toFixed(3)} Gls</p>
                     <p className="text-[11px] font-black text-right pt-1 text-slate-900">COD. TOTAL: {currencySymbol}{billingSuccessDoc.tx.amount.toFixed(2)}</p>
                   </div>
 
@@ -393,7 +393,7 @@ const NozzleTransactionsModal: React.FC<NozzleTransactionsModalProps> = ({
                     </div>
                     <div className="pt-1">
                       <span className="text-[9px] text-slate-500 block">Volumen</span>
-                      <span className="font-semibold text-slate-300 font-mono">{activeCombinedTx.volume.toFixed(2)} {unitMeasure === 'Galones' ? 'Gls' : 'Lts'}</span>
+                      <span className="font-semibold text-slate-300 font-mono">{activeCombinedTx.volume.toFixed(3)} {unitMeasure === 'Galones' ? 'Gls' : 'Lts'}</span>
                     </div>
                     <div>
                       <span className="text-[9px] text-slate-500 block">Surtidor</span>

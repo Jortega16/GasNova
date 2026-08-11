@@ -192,7 +192,7 @@ export default function ShiftReportTab({
                 <div className="flex justify-between text-xs font-sans pb-1">
                   <span className="font-semibold text-slate-700">Regular</span>
                   <span className="font-mono text-slate-600">
-                    {regularVol.toFixed(2)} Gal (${regularAmt.toFixed(2)})
+                    {regularVol.toFixed(3)} Gal (${regularAmt.toFixed(2)})
                   </span>
                 </div>
                 <div className="w-full bg-slate-100 h-6 rounded overflow-hidden flex relative items-center">
@@ -208,7 +208,7 @@ export default function ShiftReportTab({
                 <div className="flex justify-between text-xs font-sans pb-1">
                   <span className="font-semibold text-slate-700">Premium</span>
                   <span className="font-mono text-slate-600">
-                    {premiumVol.toFixed(2)} Gal (${premiumAmt.toFixed(2)})
+                    {premiumVol.toFixed(3)} Gal (${premiumAmt.toFixed(2)})
                   </span>
                 </div>
                 <div className="w-full bg-slate-100 h-6 rounded overflow-hidden flex relative items-center">
@@ -224,7 +224,7 @@ export default function ShiftReportTab({
                 <div className="flex justify-between text-xs font-sans pb-1">
                   <span className="font-semibold text-slate-700">Diesel</span>
                   <span className="font-mono text-slate-600">
-                    {dieselVol.toFixed(2)} Gal (${dieselAmt.toFixed(2)})
+                    {dieselVol.toFixed(3)} Gal (${dieselAmt.toFixed(2)})
                   </span>
                 </div>
                 <div className="w-full bg-slate-100 h-6 rounded overflow-hidden flex relative items-center">
@@ -312,7 +312,7 @@ export default function ShiftReportTab({
                   <div key={num} className="flex items-center justify-between p-2.5 bg-slate-50 rounded border border-neutral-200 gap-3">
                     <div className="text-xs font-sans">
                       <p className="font-bold text-slate-800">{pumpName.replace('Pump', 'Bomba')} - Manguera {num <= 3 ? num : num - 3}</p>
-                      <span className="text-slate-500 text-[11px]">Suma Sistema: <strong className="font-mono text-slate-700">{systemTotal.toFixed(2)}</strong></span>
+                      <span className="text-slate-500 text-[11px]">Suma Sistema: <strong className="font-mono text-slate-700">{systemTotal.toFixed(3)}</strong></span>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -478,9 +478,9 @@ export default function ShiftReportTab({
               {/* Revenue list */}
               <div className="space-y-1.5 py-1.5 border-b border-dashed border-neutral-300">
                 <p className="font-bold text-slate-900 pb-1">VENTAS POR GRADO:</p>
-                <p>Regular: <span className="float-right">{regularVol.toFixed(2)} Gal (${regularAmt.toFixed(2)})</span></p>
-                <p>Premium: <span className="float-right">{premiumVol.toFixed(2)} Gal (${premiumAmt.toFixed(2)})</span></p>
-                <p>Diesel: <span className="float-right">{dieselVol.toFixed(2)} Gal (${dieselAmt.toFixed(2)})</span></p>
+                <p>Regular: <span className="float-right">{regularVol.toFixed(3)} Gal (${regularAmt.toFixed(2)})</span></p>
+                <p>Premium: <span className="float-right">{premiumVol.toFixed(3)} Gal (${premiumAmt.toFixed(2)})</span></p>
+                <p>Diesel: <span className="float-right">{dieselVol.toFixed(3)} Gal (${dieselAmt.toFixed(2)})</span></p>
               </div>
 
               {/* Payments summary */}
@@ -501,8 +501,8 @@ export default function ShiftReportTab({
                   const diff = man - sys;
                   return (
                     <p key={n} className="flex justify-between text-[#191c1e]">
-                      <span>Bomba {n}: (Sistema: {sys.toFixed(2)})</span>
-                      <span>Manual: {man.toFixed(2)} (Dif: <span className={diff === 0 ? 'text-green-600' : 'text-red-600'}>{diff >= 0 ? '+' : ''}{diff.toFixed(2)}</span>)</span>
+                      <span>Bomba {n}: (Sistema: {sys.toFixed(3)})</span>
+                      <span>Manual: {man.toFixed(3)} (Dif: <span className={diff === 0 ? 'text-green-600' : 'text-red-600'}>{diff >= 0 ? '+' : ''}{diff.toFixed(3)}</span>)</span>
                     </p>
                   );
                 })}

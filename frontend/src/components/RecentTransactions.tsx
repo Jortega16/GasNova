@@ -198,7 +198,7 @@ export default function RecentTransactions({
 
                 {/* Volume */}
                 <div className="col-span-2 text-right text-slate-400 font-mono text-[10px]">
-                  {trx.volume.toFixed(1)}
+                  {trx.volume.toFixed(3)}
                 </div>
 
                 {/* Amount */}

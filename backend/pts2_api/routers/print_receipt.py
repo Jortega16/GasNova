@@ -277,7 +277,7 @@ def _build_receipt_bytes(req: PrintReceiptRequest, cfg: Dict[str, Any] = _print_
         unit_measure = cfg.get("unit_measure", "Galones")
         unit_suffix = "Lts" if unit_measure == "Litros" else "Gls"
         
-        buf += _enc(f"VOLUMEN: {req.volume_gal:.2f} {unit_suffix}") + LF
+        buf += _enc(f"VOLUMEN: {req.volume_gal:.3f} {unit_suffix}") + LF
         buf += LF
         buf += ALIGN_RIGHT
         buf += BOLD_ON
@@ -488,16 +488,16 @@ def _build_closure_bytes(req: PrintClosureRequest, cfg: Dict[str, Any] = _print_
                 diff = mech_vol - sys_vol
             if diff is None:
                 continue
-            diff_str     = f"{'+' if diff >= 0 else ''}{float(diff):.2f} {unit_suffix}"
+            diff_str     = f"{'+' if diff >= 0 else ''}{float(diff):.3f} {unit_suffix}"
             buf += _enc(f"  {name[:W-2]}") + LF
             open_vol = cb.get("opening_volume")
             close_vol = cb.get("closing_volume")
             if open_vol is not None:
-                buf += _lr_bytes("    Apertura:", f"{float(open_vol):.2f} {unit_suffix}", W)
+                buf += _lr_bytes("    Apertura:", f"{float(open_vol):.3f} {unit_suffix}", W)
             if close_vol is not None:
-                buf += _lr_bytes("    Cierre:", f"{float(close_vol):.2f} {unit_suffix}", W)
-            buf += _lr_bytes("    Sistema:", f"{sys_vol:.2f} {unit_suffix}", W)
-            buf += _lr_bytes("    PTS turno:", f"{mech_vol:.2f} {unit_suffix}", W)
+                buf += _lr_bytes("    Cierre:", f"{float(close_vol):.3f} {unit_suffix}", W)
+            buf += _lr_bytes("    Sistema:", f"{sys_vol:.3f} {unit_suffix}", W)
+            buf += _lr_bytes("    PTS turno:", f"{mech_vol:.3f} {unit_suffix}", W)
             buf += _lr_bytes("    Diferencia:", diff_str, W)
         buf += _div('-', W)
 

@@ -144,7 +144,7 @@ export default function PumpCard({ pump, onPreAuthorize, onEmergencyStop, onRese
             <div className="flex justify-between items-baseline">
               <span className="text-xs text-[#87a0cd] font-sans">Volumen:</span>
               <span className="text-base font-semibold font-mono text-white" id={`pump-${pump.id}-volume`}>
-                {pump.currentVolume.toFixed(2)} <span className="text-[10px] text-[#87a0cd]">Gal</span>
+                {pump.currentVolume.toFixed(3)} <span className="text-[10px] text-[#87a0cd]">Gal</span>
               </span>
             </div>
 

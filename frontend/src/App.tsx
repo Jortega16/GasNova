@@ -99,9 +99,11 @@ const normalizeBackendTransaction = (item: any): Transaction => {
 export default function App() {
   const checkIsActiveNozzle = (nozzleFuelType: string, nozzleNumber: number, pumpData: any) => {
     const rawStatus = pumpData.status_type || pumpData.Status || pumpData.status;
-    const activeNozzleNumber = Number(
-      pumpData.nozzle || pumpData.Nozzle || pumpData.NozzleUp || 0,
-    );
+    const activeNozzleNumber = (() => {
+      const raw = pumpData.nozzle ?? pumpData.Nozzle ?? pumpData.NozzleUp;
+      if (raw === null || raw === undefined) return 0;
+      return Number(raw) || 0;
+    })();
 
     if (rawStatus === 'PumpOfflineStatus') {
       return false;
@@ -464,7 +466,8 @@ export default function App() {
         const pumpData = res.pumps!.find(p => p.pump === dispenser.id);
         if (!pumpData) return dispenser;
 
-        const liftedNozzleNumber = (pumpData as any).nozzle || (pumpData as any).Nozzle || 0;
+        const liftedRaw = (pumpData as any).nozzle ?? (pumpData as any).Nozzle ?? (pumpData as any).NozzleUp;
+        const liftedNozzleNumber = liftedRaw === null || liftedRaw === undefined ? 0 : Number(liftedRaw) || 0;
         const pts2Status = mapPts2Status(pumpData.status_type, liftedNozzleNumber);
 
         // ── Auto-autorizar al levantar manguera ─────────────────────────────
@@ -529,7 +532,14 @@ export default function App() {
 
             // 2) Manguera levantada en Idle → Ready
             if (pts2Status === 'Ready' && isActiveNozzle) {
-              if (nozzle.status === 'Blocked' || nozzle.status === 'Prepaid' || nozzle.status === 'Unpaid') {
+              // No pisar fin de despacho / cobro pendiente con Ready
+              // (algunos firmware dejan Nozzle>0 un instante tras colgar).
+              if (
+                nozzle.status === 'Blocked' ||
+                nozzle.status === 'Prepaid' ||
+                nozzle.status === 'Unpaid' ||
+                nozzle.status === 'EndOfTransaction'
+              ) {
                 return nozzle;
               }
               return {
@@ -705,50 +715,48 @@ export default function App() {
               return { ...nozzle, status: 'Offline' };
             }
 
-            // Estado 5: manguera colgada (Idle) tras fin de despacho → cola de cobro
-            if (
-              pts2Status === 'Idle' &&
-              (nozzle.status === 'Unpaid' || nozzle.status === 'EndOfTransaction')
-            ) {
-              // Evita doble pending: no inventar TRX mientras capture está en curso
-              // ni si aún no hay ID del PTS.
-              if (
-                !nozzle.ptsTransactionId ||
-                nozzle.ptsTransactionId === '__capturing__'
-              ) {
-                return {
-                  ...nozzle,
-                  status: 'EndOfTransaction',
-                  currentVolume: nozzle.currentVolume,
-                  currentAmount: nozzle.currentAmount,
-                  progressPercent: 100,
-                };
-              }
+            // Estado 5: manguera COLGADA (Idle + Nozzle/NozzleUp = 0).
+            // isActiveNozzle es false para todas, así que se limpia por estado local.
+            const nozzleHung = pts2Status === 'Idle' && liftedNozzleNumber <= 0;
 
-              const trxId = nozzle.ptsTransactionId;
-              const vol = nozzle.currentVolume;
-              const amt = nozzle.currentAmount;
-              const fuel = nozzle.fuelType;
-              setTimeout(() => {
-                completeFuelingJob(dispenser.id, vol, amt, fuel, undefined, trxId);
-              }, 10);
+            if (nozzleHung) {
+              // Tras fin de despacho / cobro pendiente → cola de cobro
+              if (nozzle.status === 'Unpaid' || nozzle.status === 'EndOfTransaction') {
+                const vol = Number(nozzle.currentVolume || 0);
+                const amt = Number(nozzle.currentAmount || 0);
 
-              return {
-                ...nozzle,
-                status: 'Idle',
-                currentVolume: 0,
-                currentAmount: 0,
-                progressPercent: 0,
-                isPostpaid: false,
-                limitAmount: undefined,
-                ptsTransactionId: undefined,
-              };
-            }
+                // Capture aún en curso: si no hay despacho real, cerrar sin venta.
+                if (!nozzle.ptsTransactionId || nozzle.ptsTransactionId === '__capturing__') {
+                  if (vol <= 0 && amt <= 0) {
+                    const pumpIdHang = dispenser.id;
+                    setTimeout(() => { api.closeTransaction(pumpIdHang); }, 10);
+                    return {
+                      ...nozzle,
+                      status: 'Idle',
+                      currentVolume: 0,
+                      currentAmount: 0,
+                      progressPercent: 0,
+                      isPostpaid: false,
+                      limitAmount: undefined,
+                      ptsTransactionId: undefined,
+                    };
+                  }
+                  // Mantener EOT hasta tener trx_id real (el capture async lo setea)
+                  return {
+                    ...nozzle,
+                    status: 'EndOfTransaction',
+                    currentVolume: vol,
+                    currentAmount: amt,
+                    progressPercent: 100,
+                  };
+                }
 
-            if (pts2Status === 'Idle' && isActiveNozzle) {
-              // PTS-2 is now idle: only reset if dashboard also thinks it's done
-              // (avoid resetting a Prepaid that the PTS-2 hasn't processed yet)
-              if (nozzle.status === 'Dispensing') {
+                const trxId = nozzle.ptsTransactionId;
+                const fuel = nozzle.fuelType;
+                setTimeout(() => {
+                  completeFuelingJob(dispenser.id, vol, amt, fuel, undefined, trxId);
+                }, 10);
+
                 return {
                   ...nozzle,
                   status: 'Idle',
@@ -757,6 +765,25 @@ export default function App() {
                   progressPercent: 0,
                   isPostpaid: false,
                   limitAmount: undefined,
+                  ptsTransactionId: undefined,
+                };
+              }
+
+              // Levantó y colgó sin despacho (Ready / Authorized) → volver a reposo
+              if (
+                nozzle.status === 'Ready' ||
+                nozzle.status === 'Authorized' ||
+                nozzle.status === 'Dispensing'
+              ) {
+                return {
+                  ...nozzle,
+                  status: 'Idle',
+                  currentVolume: 0,
+                  currentAmount: 0,
+                  progressPercent: 0,
+                  isPostpaid: false,
+                  limitAmount: undefined,
+                  ptsTransactionId: undefined,
                 };
               }
             }
@@ -970,7 +997,7 @@ export default function App() {
       id: `AL-AUTH-${Math.random()}`,
       dateTime: `Hoy ${timeStr}`,
       pumpName: `Cara ${preauthorizingPumpId} (${preauthFuelGrade})`,
-      volume: preauthMode === 'Limit' && preauthLimitType === 'Volume' && valLimit ? `${valLimit.toFixed(2)} ${unitMeasure === 'Galones' ? 'Gal' : 'L'}` : '0.00 Gal',
+      volume: preauthMode === 'Limit' && preauthLimitType === 'Volume' && valLimit ? `${valLimit.toFixed(3)} ${unitMeasure === 'Galones' ? 'Gal' : 'L'}` : '0.000 Gal',
       amount: preauthMode === 'Full' ? 'Tanque Lleno' : (preauthMode === 'Limit' && preauthLimitType === 'Amount' && valLimit ? `$${valLimit.toFixed(2)}` : 'S/L'),
       paymentType: preauthMode === 'Full' ? 'Postpago' : 'Pre-auth',
       message: `Cara ${preauthorizingPumpId} autorizada para carga de ${preauthFuelGrade} (${getModeLabel()})`,
@@ -1303,11 +1330,11 @@ export default function App() {
       id: `AL-EMG-${Math.random()}`,
       dateTime: `Hoy ${timeStr}`,
       pumpName: `Cara ${dispenserId} (${fuelType === 'Regular Unleaded' ? 'Regular' : fuelType === 'Premium Unleaded' ? 'Súper' : 'Diesel'})`,
-      volume: wasDispensing ? `${stoppedVolume.toFixed(2)} Gal` : '0.00 Gal',
+      volume: wasDispensing ? `${stoppedVolume.toFixed(3)} Gal` : '0.000 Gal',
       amount: wasDispensing ? `$${stoppedAmount.toFixed(2)}` : '$0.00',
       paymentType: wasDispensing ? 'Hose Pend.' : 'S.O.S',
       message: wasDispensing
-        ? `■ Despacho detenido manualmente en Cara ${dispenserId} (${fuelType === 'Regular Unleaded' ? 'Regular' : fuelType === 'Premium Unleaded' ? 'Súper' : 'Diesel'}). ${stoppedVolume.toFixed(2)} Gal · $${stoppedAmount.toFixed(2)} agregados a despachos pendientes.`
+        ? `■ Despacho detenido manualmente en Cara ${dispenserId} (${fuelType === 'Regular Unleaded' ? 'Regular' : fuelType === 'Premium Unleaded' ? 'Súper' : 'Diesel'}). ${stoppedVolume.toFixed(3)} Gal · $${stoppedAmount.toFixed(2)} agregados a despachos pendientes.`
         : `🛑 PARADA DE EMERGENCIA en Cara ${dispenserId} - Manguera ${fuelType === 'Regular Unleaded' ? 'Regular' : fuelType === 'Premium Unleaded' ? 'Súper' : 'Diesel'} (sin despacho activo).`,
       isCustomNote: true
     };
@@ -1609,7 +1636,7 @@ export default function App() {
         id: `AL-PAID-${Math.random()}`,
         dateTime: `Hoy ${timeStr}`,
         pumpName: `Cara ${dispenserId}`,
-        volume: `${collectedVolume.toFixed(2)} Gal`,
+        volume: `${collectedVolume.toFixed(3)} Gal`,
         amount: `$${collectedAmount.toFixed(2)}`,
         paymentType: paymentType,
         message: `✓ Pago Recibido: Cobro de $${collectedAmount.toFixed(2)} liquidado con ${methodLabels[paymentType]} para la Cara ${dispenserId} (${fuelType}).`,
@@ -1983,7 +2010,7 @@ export default function App() {
         id: `SYS-AL-${Math.random()}`,
         dateTime: `Hoy ${timeStr}`,
         pumpName: 'SISTEMA',
-        volume: `${allNewTransactions.reduce((acc, t) => acc + t.volume, 0).toFixed(1)} G`,
+        volume: `${allNewTransactions.reduce((acc, t) => acc + t.volume, 0).toFixed(3)} G`,
         amount: `$${allNewTransactions.reduce((acc, t) => acc + t.amount, 0).toFixed(2)}`,
         paymentType: 'Auto-Batch',
         message: `Consolidación de ${allNewTransactions.length} despachos acumulados finalizada correctamente (Ciclo 5 min).`,
@@ -2026,7 +2053,7 @@ export default function App() {
     // Calculate volume based on price
     const unitPrice = prices.find(p => p.fuelType === fuelType)?.price || 4.19;
     const amount = parseFloat((30 + Math.random() * 40).toFixed(2));
-    const volume = parseFloat((amount / unitPrice).toFixed(2));
+    const volume = parseFloat((amount / unitPrice).toFixed(3));
 
     const mockTrx: NozzleTransaction = {
       id: randomTrxId,
@@ -2067,7 +2094,7 @@ export default function App() {
       id: `AL-MOCK-${Math.random()}`,
       dateTime: `Simulado ${timeStr}`,
       pumpName: `Cara ${dispenserId}`,
-      volume: `${volume.toFixed(2)} Gal`,
+      volume: `${volume.toFixed(3)} Gal`,
       amount: `$${amount.toFixed(2)}`,
       paymentType: 'Auto-Sim.',
       message: `Despacho de prueba generado en manguera ${fuelType === 'Regular Unleaded' ? 'Regular' : fuelType === 'Premium Unleaded' ? 'Super' : 'Diesel'}.`,
@@ -2161,7 +2188,7 @@ export default function App() {
         id: `SYS-${Math.random()}`,
         dateTime: `Hoy ${timeStr}`,
         pumpName: `Cara ${dispenserId}`,
-        volume: `${combinedTx.volume.toFixed(1)} Gal`,
+        volume: `${combinedTx.volume.toFixed(3)} Gal`,
         amount: `$${combinedTx.amount.toFixed(2)}`,
         paymentType: billingType,
         message: `${processedTrxs.length === 1 ? `Despacho ${processedTrxs[0].id}` : `Lote de ${processedTrxs.length} despachos`} procesado como ${billingType === 'Factura' ? `Factura (RUC: ${clientRuc || '—'})` : billingType === 'Ticket' ? 'Ticket de Venta' : 'Bajada directa'}.`,
@@ -2234,7 +2261,7 @@ export default function App() {
         id: `SYS-AL-${Math.random()}`,
         dateTime: `Hoy ${timeStr}`,
         pumpName: `Cara ${dispenserId}`,
-        volume: `${newTransactions.reduce((acc, t) => acc + t.volume, 0).toFixed(1)} ${unitMeasure === 'Galones' ? 'Gal' : 'L'}`,
+        volume: `${newTransactions.reduce((acc, t) => acc + t.volume, 0).toFixed(3)} ${unitMeasure === 'Galones' ? 'Gal' : 'L'}`,
         amount: `${currencySymbol}${newTransactions.reduce((acc, t) => acc + t.amount, 0).toFixed(2)}`,
         paymentType: 'Manguera-Batch',
         message: `Vaciado y procesamiento de lote completo (${newTransactions.length} despachos) de la manguera finalizado correctamente por el operador.`,
@@ -2391,7 +2418,7 @@ export default function App() {
             id: `AL-AUTO-${Math.random()}`,
             dateTime: `Hoy ${timeStr}`,
             pumpName: `Cara ${pTx.dispenserId}`,
-            volume: `${pTx.volume.toFixed(1)} G`,
+            volume: `${pTx.volume.toFixed(3)} G`,
             amount: `$${pTx.amount.toFixed(2)}`,
             paymentType: 'Auto-Cons.',
             message: `Despacho ${pTx.id} consolidado automáticamente (tiempo límite de ${autoConsolidateMinutesRef.current} min por despacho superado).`,
@@ -3192,7 +3219,7 @@ export default function App() {
       id: `AL-${Math.random()}`,
       dateTime: `Hoy ${timeStr}`,
       pumpName: `Cara ${dispenserId}`,
-      volume: `${volume.toFixed(2)} Gal`,
+      volume: `${volume.toFixed(3)} Gal`,
       amount: `$${amount.toFixed(2)}`,
       paymentType: 'Hose Pend.',
       message: `Despacho completado en manguera ${fuelType === 'Regular Unleaded' ? 'Regular' : fuelType === 'Premium Unleaded' ? 'Super' : 'Diesel'}. Listo para procesar/comprobar.`,
@@ -3800,7 +3827,7 @@ export default function App() {
             id: `AL-AUTH-${Math.random()}`,
             dateTime: `Hoy ${timeStr}`,
             pumpName: `Cara ${pumpId} (${fuelType})`,
-            volume: mode === 'Limit' && limitType === 'Volume' && valLimit ? `${valLimit.toFixed(2)} ${unitMeasure === 'Galones' ? 'Gal' : 'L'}` : '0.00 Gal',
+            volume: mode === 'Limit' && limitType === 'Volume' && valLimit ? `${valLimit.toFixed(3)} ${unitMeasure === 'Galones' ? 'Gal' : 'L'}` : '0.000 Gal',
             amount: mode === 'Full' ? 'Tanque Lleno' : (mode === 'Limit' && limitType === 'Amount' && valLimit ? `$${valLimit.toFixed(2)}` : 'S/L'),
             paymentType: mode === 'Full' ? 'Postpago' : 'Pre-auth',
             message: `Cara ${pumpId} autorizada para carga de ${fuelType} (${getModeLabel()})`,

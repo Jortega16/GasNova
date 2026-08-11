@@ -94,8 +94,17 @@ def get_all_pumps_status(
         status_type = packet.type or "PumpOfflineStatus"
 
         # Extract prices: NozzlePrices is a list, active nozzle price is NozzlePrices[nozzle-1]
+        # Importante: Nozzle=0 significa manguera colgada — no usar `or` (0 es falsy).
         nozzle_prices: list[float] | None = data.get("NozzlePrices")
-        active_nozzle = data.get("Nozzle") or data.get("NozzleUp")
+        raw_nozzle = data.get("Nozzle")
+        if raw_nozzle is None:
+            raw_nozzle = data.get("NozzleUp")
+        try:
+            active_nozzle = int(raw_nozzle) if raw_nozzle is not None else None
+        except (TypeError, ValueError):
+            active_nozzle = None
+        if active_nozzle is not None and active_nozzle < 0:
+            active_nozzle = 0
         active_price: float | None = None
         if nozzle_prices and active_nozzle and isinstance(active_nozzle, int):
             idx = active_nozzle - 1
