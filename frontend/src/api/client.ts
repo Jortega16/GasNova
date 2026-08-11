@@ -217,10 +217,13 @@ export const api = {
   async postpayAuthorizePump(
     pumpId: number,
     nozzle: number,
+    shiftId?: string,
   ): Promise<BackendApiResponse> {
+    const body: Record<string, unknown> = { nozzle };
+    if (shiftId) body.shift_id = shiftId;
     return apiFetch(`pumps/${pumpId}/postpay-authorize`, {
       method: "POST",
-      body: JSON.stringify({ nozzle }),
+      body: JSON.stringify(body),
     });
   },
 
@@ -667,6 +670,37 @@ export const api = {
           fuelGradeId: n.fuelGradeId,
           fuelType: n.fuelType,
           name: n.name ?? n.fuelType,
+        })),
+      }),
+    });
+  },
+
+  async replaceLocalPumpsConfiguration(
+    pumps: {
+      pumpId: number;
+      name: string;
+      nozzlesCount: number;
+      nozzles?: {
+        nozzle: number;
+        fuelGradeId: number;
+        fuelType: string;
+        name?: string;
+      }[];
+    }[],
+  ): Promise<BackendApiResponse<unknown[]>> {
+    return apiFetch<unknown[]>("pumps/local-configuration", {
+      method: "PUT",
+      body: JSON.stringify({
+        pumps: pumps.map((p) => ({
+          pumpId: p.pumpId,
+          name: p.name,
+          nozzlesCount: p.nozzlesCount,
+          nozzles: p.nozzles?.map((n) => ({
+            nozzle: n.nozzle,
+            fuelGradeId: n.fuelGradeId,
+            fuelType: n.fuelType,
+            name: n.name ?? n.fuelType,
+          })),
         })),
       }),
     });

@@ -102,6 +102,10 @@ class ErrorResponse(ApiModel):
 
 class PostpayAuthorizeRequest(ApiModel):
     nozzle: int = Field(ge=1, description="Número de boquilla del surtidor para autorizar en modo postpago.")
+    shift_id: str | None = Field(
+        default=None,
+        description="ID del turno activo en el momento de la autorización. Se propaga al pending y a la transacción final.",
+    )
 
 
 class UserCreate(ApiModel):

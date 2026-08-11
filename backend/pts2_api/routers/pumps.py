@@ -475,10 +475,21 @@ def unlock(
 )
 def postpay_authorize(
     request: PostpayAuthorizeRequest,
+    req: Request,
     pump_id: int = Path(ge=1, description="ID del surtidor a autorizar."),
     client: PTS2Client = Depends(get_pts2_client),
+    db: Session = Depends(get_db),
 ) -> CommandResponse:
     """Envía una solicitud de autorización libre (sin límite) al surtidor."""
+    # Misma captura de turno que authorize(): Full/postpay no debe perder el
+    # shift_id si el operador cierra/abre turno mid-despacho.
+    from ..transaction_store import get_active_shift_id
+    shift_at_auth = request.shift_id or get_active_shift_id(db)
+    if shift_at_auth:
+        auth_shifts: dict[int, str] = getattr(req.app.state, "pump_auth_shifts", {})
+        auth_shifts[pump_id] = shift_at_auth
+        req.app.state.pump_auth_shifts = auth_shifts
+
     try:
         data = client.pumps.authorize_free(pump_id, nozzle=request.nozzle)
         return CommandResponse(data={"status": "Authorized", "mode": "Postpay", "detail": data})
@@ -809,6 +820,73 @@ def save_local_pump_configuration(
     db.commit()
     db.refresh(existing)
     return CommandResponse(data=_serialize_pump_config(existing))
+
+
+class LocalPumpsReplaceRequest(BaseModel):
+    pumps: list[LocalPumpConfigCreate]
+
+
+@router.put(
+    "/local-configuration",
+    response_model=CommandResponse,
+    summary="Reemplazar todo el mapeo local de caras",
+    description=(
+        "Sustituye la configuración local de caras/mangueras por la lista enviada "
+        "(típico tras 'Recuperar desde PTS-2'). Elimina caras que ya no estén en la lista."
+    ),
+)
+def replace_local_pumps_configuration(
+    request: LocalPumpsReplaceRequest,
+    db: Session = Depends(get_db),
+) -> CommandResponse:
+    """Reemplaza de forma atómica el mapeo local de bombas."""
+    keep_ids: set[int] = set()
+    for item in request.pumps:
+        nozzles_payload = None
+        if item.nozzles is not None:
+            nozzles_payload = _normalize_nozzles(
+                [n.model_dump(by_alias=False) for n in item.nozzles],
+                item.nozzlesCount,
+            )
+            nozzles_count = len(nozzles_payload)
+        else:
+            nozzles_count = item.nozzlesCount
+
+        existing = (
+            db.query(PumpConfiguration)
+            .filter(PumpConfiguration.pump_id == item.pumpId)
+            .first()
+        )
+        if existing:
+            existing.pump_name = item.name
+            existing.nozzles_count = nozzles_count
+            existing.status = "active"
+            if nozzles_payload is not None:
+                existing.nozzles_json = nozzles_payload
+            elif not existing.nozzles_json:
+                existing.nozzles_json = _default_nozzles(nozzles_count)
+        else:
+            db.add(
+                PumpConfiguration(
+                    pump_id=item.pumpId,
+                    pump_name=item.name,
+                    nozzles_count=nozzles_count,
+                    status="active",
+                    nozzles_json=nozzles_payload or _default_nozzles(nozzles_count),
+                )
+            )
+        keep_ids.add(item.pumpId)
+
+    if keep_ids:
+        db.query(PumpConfiguration).filter(
+            ~PumpConfiguration.pump_id.in_(keep_ids)
+        ).delete(synchronize_session=False)
+    else:
+        db.query(PumpConfiguration).delete(synchronize_session=False)
+
+    db.commit()
+    configs = db.query(PumpConfiguration).order_by(PumpConfiguration.pump_id).all()
+    return CommandResponse(data=[_serialize_pump_config(c) for c in configs])
 
 
 @router.get(

@@ -27,7 +27,7 @@ import { useVisibilityPolling } from './hooks/useVisibilityPolling';
 import { useLiveState } from './hooks/useLiveState';
 import { usePermissions } from './hooks/usePermissions';
 import { litersToDisplay, displayToLiters, unitLabel, formatVolume } from './utils/units';
-import { mapPumpConfigToDispenser, mapNameToFuelType, idleNozzle } from './utils/pumpMapping';
+import { mapPumpConfigToDispenser, mapNameToFuelType, idleNozzle, resolveNozzleNumber } from './utils/pumpMapping';
 
 const PriceConfigTab = lazy(() => import('./components/PriceConfigTab'));
 const ShiftReportTab = lazy(() => import('./components/ShiftReportTab'));
@@ -95,28 +95,35 @@ const normalizeBackendTransaction = (item: any): Transaction => {
 export default function App() {
   const checkIsActiveNozzle = (nozzleFuelType: string, nozzleNumber: number, pumpData: any) => {
     const rawStatus = pumpData.status_type || pumpData.Status || pumpData.status;
-    if (rawStatus === 'PumpIdleStatus' || rawStatus === 'PumpOfflineStatus') {
+    const activeNozzleNumber = Number(
+      pumpData.nozzle || pumpData.Nozzle || pumpData.NozzleUp || 0,
+    );
+
+    if (rawStatus === 'PumpOfflineStatus') {
       return false;
     }
-    
+
+    // Ready = Idle + manguera levantada: emparejar por número de manguera físico.
+    if (rawStatus === 'PumpIdleStatus') {
+      return activeNozzleNumber > 0 && activeNozzleNumber === nozzleNumber;
+    }
+
     // Restore original nozzle ID matching behavior for Pumps 2 and 4
     if (pumpData.pump === 2 || pumpData.pump === 4) {
-      const activeNozzleNumber = pumpData.nozzle || pumpData.Nozzle || pumpData.NozzleUp || 0;
       return activeNozzleNumber === nozzleNumber;
     }
-    
+
     const gradeName = pumpData.fuel_grade_name || pumpData.FuelGradeName;
     if (gradeName) {
       const grade = gradeName.toLowerCase();
       const type = nozzleFuelType.toLowerCase();
       if (grade.includes('diesel') && type.includes('diesel')) return true;
-      if ((grade.includes('petrol') || grade.includes('regular') || grade.includes('super')) && type.includes('regular')) return true;
-      if (grade.includes('premium') && type.includes('premium')) return true;
+      if ((grade.includes('petrol') || grade.includes('regular')) && type.includes('regular')) return true;
+      if ((grade.includes('premium') || grade.includes('super')) && type.includes('premium')) return true;
       if (grade.includes('lpg') && type.includes('lpg')) return true;
       if (grade.includes('kerosene') && type.includes('kerosene')) return true;
     }
-    
-    const activeNozzleNumber = pumpData.nozzle || pumpData.Nozzle || pumpData.NozzleUp || 0;
+
     return activeNozzleNumber === nozzleNumber;
   };
 
@@ -156,6 +163,14 @@ export default function App() {
 
   // Primary state models
   const [dispensers, setDispensers] = useState<DispenserState[]>(getOperationalInitialDispensers);
+  const dispensersRef = useRef(dispensers);
+  dispensersRef.current = dispensers;
+
+  /** Manguera PTS (1-based) según mapeo de la cara, no índice global de combustible. */
+  const resolveNozzleForPump = (pumpId: number, fuelType: FuelType): number => {
+    const d = dispensersRef.current.find((x) => x.id === pumpId);
+    return resolveNozzleNumber(d?.nozzles, fuelType);
+  };
   const [tanks, setTanks] = useState<TankState[]>(INITIAL_TANKS);
   // prices / setPrices come from useSystemSettings (defined below)
   const [scheduledPrices, setScheduledPrices] = useState<ScheduledPrice[]>(INITIAL_SCHEDULED_PRICES);
@@ -428,10 +443,8 @@ export default function App() {
       const pump1 = res.pumps.find(p => p.pump === 1);
       const nozzlePrices = pump1?.nozzle_prices;
       if (nozzlePrices && nozzlePrices.length > 0) {
-        const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
         setPrices(currentPrices => currentPrices.map(p => {
-          const nozzleIndex = fuelGrades.indexOf(p.fuelType);
-          const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+          const nozzleNumber = resolveNozzleForPump(1, p.fuelType);
           const priceVal = nozzlePrices[nozzleNumber - 1];
           if (priceVal !== undefined && p.price !== priceVal) {
             return { ...p, price: priceVal, lastUpdated: `Hoy ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` };
@@ -630,8 +643,22 @@ export default function App() {
               pts2Status === 'Idle' &&
               (nozzle.status === 'Unpaid' || nozzle.status === 'EndOfTransaction')
             ) {
-              const trxId = nozzle.ptsTransactionId && nozzle.ptsTransactionId !== '__capturing__'
-                ? nozzle.ptsTransactionId : undefined;
+              // Evita doble pending: no inventar TRX mientras capture está en curso
+              // ni si aún no hay ID del PTS.
+              if (
+                !nozzle.ptsTransactionId ||
+                nozzle.ptsTransactionId === '__capturing__'
+              ) {
+                return {
+                  ...nozzle,
+                  status: 'EndOfTransaction',
+                  currentVolume: nozzle.currentVolume,
+                  currentAmount: nozzle.currentAmount,
+                  progressPercent: 100,
+                };
+              }
+
+              const trxId = nozzle.ptsTransactionId;
               const vol = nozzle.currentVolume;
               const amt = nozzle.currentAmount;
               const fuel = nozzle.fuelType;
@@ -845,10 +872,10 @@ export default function App() {
     }));
 
     // Call backend to authorize the pump
-    const nozzleNumber = Math.max(1, FUEL_GRADES.indexOf(preauthFuelGrade) + 1);
+    const nozzleNumber = resolveNozzleForPump(preauthorizingPumpId, preauthFuelGrade);
     
     if (preauthMode === 'Full') {
-      api.postpayAuthorizePump(preauthorizingPumpId, nozzleNumber);
+      api.postpayAuthorizePump(preauthorizingPumpId, nozzleNumber, shiftDetails.shiftId);
     } else {
       // Sin conversión Gal↔L: el límite se envía con el valor de la etiqueta actual
       const finalLimit = valLimit;
@@ -1102,8 +1129,8 @@ export default function App() {
     }));
 
     // Call backend to authorize postpaid and start dispensing
-    const nozzleNumber = Math.max(1, FUEL_GRADES.indexOf(fuelType) + 1);
-    api.postpayAuthorizePump(dispenserId, nozzleNumber).then(() => {
+    const nozzleNumber = resolveNozzleForPump(dispenserId, fuelType);
+    api.postpayAuthorizePump(dispenserId, nozzleNumber, shiftDetails.shiftId).then(() => {
       api.startDispensing(dispenserId);
     });
 
@@ -1641,7 +1668,7 @@ export default function App() {
     } else {
       for (const d of dispensers) {
         if (d.nozzles.some(n => n.fuelType === fuelType)) {
-          const nozzleNumber = Math.max(1, FUEL_GRADES.indexOf(fuelType) + 1);
+          const nozzleNumber = resolveNozzleNumber(d.nozzles, fuelType);
           await api.setPumpPrices(d.id, [{ nozzle: nozzleNumber, price: newPrice }]);
         }
       }
@@ -1965,9 +1992,7 @@ export default function App() {
     }));
 
     // Save to transient pending transactions database (DB always stores liters)
-    const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
-    const nozzleIndex = fuelGrades.indexOf(fuelType);
-    const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+    const nozzleNumber = resolveNozzleForPump(dispenserId, fuelType);
     api.savePendingTransaction(dispenserId, randomTrxId, nozzleNumber, displayToLiters(volume, unitMeasure), amount, fuelType);
 
     // Trigger alert
@@ -2932,9 +2957,7 @@ export default function App() {
       numericTrxId = numericTrxId & numericTrxId;
     }
     numericTrxId = Math.abs(numericTrxId) % 10000000;
-    const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
-    const nozzleIndex = fuelGrades.indexOf(fuelType);
-    const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+    const nozzleNumber = resolveNozzleForPump(pumpId, fuelType);
 
     // Sin conversión Gal↔L: el valor se guarda tal cual (la etiqueta es solo visual).
     api.saveTransaction(pumpId, numericTrxId, nozzleNumber, volume, amount, paymentType).then(res => {
@@ -2954,9 +2977,7 @@ export default function App() {
     documentType?: 'Bajada' | 'Ticket' | 'Factura',
     documentNumber?: string
   ): Promise<void> => {
-    const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
-    const nozzleIndex = fuelGrades.indexOf(fuelType);
-    const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+    const nozzleNumber = resolveNozzleForPump(pumpId, fuelType);
     const processPayload = {
       payment_type: paymentType,
       status: 'Completed',
@@ -3050,9 +3071,7 @@ export default function App() {
 
     // Save to transient pending transactions database if it's a new completed sale (not restoring from DB)
     if (!trxId) {
-      const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
-      const nozzleIndex = fuelGrades.indexOf(fuelType);
-      const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+      const nozzleNumber = resolveNozzleForPump(dispenserId, fuelType);
       console.log(`[completeFuelingJob] Guardando venta en cola en BD: pump=${dispenserId}, trx=${randomTrxId}, nozzle=${nozzleNumber}, volume=${volume}, amount=${amount}`);
       api.savePendingTransaction(dispenserId, randomTrxId, nozzleNumber, volume, amount, fuelType).then(res => {
         if (res.ok) {
@@ -3679,14 +3698,12 @@ export default function App() {
             return d;
           }));
 
-          const fuelGrades: FuelType[] = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene'];
-          const nozzleIndex = fuelGrades.indexOf(fuelType);
-          const nozzleNumber = nozzleIndex >= 0 ? nozzleIndex + 1 : 1;
+          const nozzleNumber = resolveNozzleForPump(pumpId, fuelType);
 
           if (mode === 'Full') {
-            api.postpayAuthorizePump(pumpId, nozzleNumber);
+            api.postpayAuthorizePump(pumpId, nozzleNumber, shiftDetails.shiftId);
           } else {
-            api.authorizePump(pumpId, nozzleNumber, mode === 'Limit' ? limitType : undefined, mode === 'Limit' ? valLimit : undefined);
+            api.authorizePump(pumpId, nozzleNumber, mode === 'Limit' ? limitType : undefined, mode === 'Limit' ? valLimit : undefined, shiftDetails.shiftId);
           }
 
           const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });

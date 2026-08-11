@@ -20,6 +20,22 @@ const FUEL_BY_GRADE_ID: Record<number, FuelType> = {
   5: 'LPG',
 };
 
+const GRADE_ID_BY_FUEL: Record<FuelType, number> = {
+  'Regular Unleaded': 1,
+  'Premium Unleaded': 2,
+  'Diesel': 3,
+  'Kerosene': 4,
+  'LPG': 5,
+};
+
+export const EDITABLE_FUEL_OPTIONS: { type: FuelType; name: string; color: string }[] = [
+  { type: 'Regular Unleaded', name: 'Regular', color: 'bg-blue-500' },
+  { type: 'Premium Unleaded', name: 'Súper/Premium', color: 'bg-amber-500' },
+  { type: 'Diesel', name: 'Diesel', color: 'bg-emerald-500' },
+  { type: 'Kerosene', name: 'Queroseno', color: 'bg-purple-500' },
+  { type: 'LPG', name: 'GLP/LPG', color: 'bg-cyan-500' },
+];
+
 export function mapNameToFuelType(name: string, gradeId?: number): FuelType {
   const lower = (name || '').toLowerCase().trim();
   for (const [alias, fuel] of KNOWN_FUEL_ALIASES) {
@@ -29,6 +45,10 @@ export function mapNameToFuelType(name: string, gradeId?: number): FuelType {
   return 'Regular Unleaded';
 }
 
+export function defaultGradeIdForFuel(fuelType: FuelType, fallback = 1): number {
+  return GRADE_ID_BY_FUEL[fuelType] ?? fallback;
+}
+
 export interface PumpNozzleMapping {
   nozzle: number;
   fuelGradeId: number;
@@ -36,13 +56,18 @@ export interface PumpNozzleMapping {
   name?: string;
 }
 
-export function idleNozzle(fuelType: FuelType): NozzleState {
+export function idleNozzle(
+  fuelType: FuelType,
+  opts?: { fuelGradeId?: number; fuelName?: string },
+): NozzleState {
   return {
     fuelType,
     status: 'Idle' as PumpStatus,
     currentAmount: 0,
     currentVolume: 0,
     progressPercent: 0,
+    fuelGradeId: opts?.fuelGradeId ?? defaultGradeIdForFuel(fuelType),
+    fuelName: opts?.fuelName ?? fuelType,
   };
 }
 
@@ -65,14 +90,17 @@ export function mapPumpConfigToDispenser(p: {
   const nozzlesRaw = Array.isArray(p.nozzles) ? p.nozzles : [];
   const nozzles: NozzleState[] =
     nozzlesRaw.length > 0
-      ? nozzlesRaw.map((n) => {
-          const gradeId = Number(n.fuel_grade_id ?? n.fuelGradeId ?? 0);
+      ? nozzlesRaw.map((n, i) => {
+          const gradeId = Number(n.fuel_grade_id ?? n.fuelGradeId ?? 0) || (i + 1);
           const rawType = String(n.fuel_type ?? n.fuelType ?? n.name ?? '');
           const fuelType = mapNameToFuelType(rawType, gradeId || undefined);
-          return idleNozzle(fuelType);
+          const fuelName = String(n.name ?? rawType || fuelType);
+          return idleNozzle(fuelType, { fuelGradeId: gradeId, fuelName });
         })
       : Array.from({ length: p.nozzles_count ?? 1 }, (_, i) =>
-          idleNozzle(FUEL_BY_GRADE_ID[i + 1] ?? 'Regular Unleaded'),
+          idleNozzle(FUEL_BY_GRADE_ID[i + 1] ?? 'Regular Unleaded', {
+            fuelGradeId: i + 1,
+          }),
         );
 
   return {
@@ -83,17 +111,22 @@ export function mapPumpConfigToDispenser(p: {
 }
 
 export function dispenserToNozzleMappings(d: DispenserState): PumpNozzleMapping[] {
-  const gradeByFuel: Record<FuelType, number> = {
-    'Regular Unleaded': 1,
-    'Premium Unleaded': 2,
-    'Diesel': 3,
-    'Kerosene': 4,
-    'LPG': 5,
-  };
   return d.nozzles.map((n, i) => ({
     nozzle: i + 1,
-    fuelGradeId: gradeByFuel[n.fuelType] ?? i + 1,
+    fuelGradeId: n.fuelGradeId ?? defaultGradeIdForFuel(n.fuelType, i + 1),
     fuelType: n.fuelType,
-    name: n.fuelType,
+    name: n.fuelName ?? n.fuelType,
   }));
+}
+
+/** Número de manguera PTS (1-based) según el mapeo de la cara, no el índice global de combustible. */
+export function resolveNozzleNumber(
+  nozzles: Array<{ fuelType: FuelType }> | undefined | null,
+  fuelType: FuelType,
+): number {
+  if (Array.isArray(nozzles) && nozzles.length > 0) {
+    const idx = nozzles.findIndex((n) => n.fuelType === fuelType);
+    if (idx >= 0) return idx + 1;
+  }
+  return defaultGradeIdForFuel(fuelType);
 }

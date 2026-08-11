@@ -3,14 +3,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Transaction, PaymentMethod, DispenserState, FuelType, NozzleState } from '../types';
 import { TrendingUp, CreditCard, HelpCircle, Star, ShieldCheck, Mail, ShieldAlert, Check, Terminal, Users, UserCheck, Plus, BarChart3, Database, Clock, DollarSign, Trash2, Edit2, Palette, Eye, Settings, RefreshCw, Printer, Scissors, FileText, Receipt, ChevronDown, ChevronUp, Save, Wifi, WifiOff, Download, Server, X } from 'lucide-react';
 import { api } from '../api';
 import type { PrintStation } from '../api/types';
 import { getPrintStationId, setPrintStationId, getStationLocation, setStationLocation } from '../printStation';
 import { getAuthToken } from '../auth';
-import { mapPumpConfigToDispenser, mapNameToFuelType, dispenserToNozzleMappings, idleNozzle } from '../utils/pumpMapping';
+import {
+  mapPumpConfigToDispenser,
+  mapNameToFuelType,
+  dispenserToNozzleMappings,
+  idleNozzle,
+  defaultGradeIdForFuel,
+  EDITABLE_FUEL_OPTIONS,
+} from '../utils/pumpMapping';
 
 // Headers para los fetch directos al API de impresión (no pasan por apiFetch)
 const printApiHeaders = (): Record<string, string> => {
@@ -300,10 +307,15 @@ export default function OtherTabs({
       .finally(() => setLoadingTrxs(false));
   }, [selectedShiftFilter, transactions]);
 
+  // Evita que una carga BD pendiente pise un "Recuperar desde PTS-2" reciente
+  const mappingLoadGenRef = useRef(0);
+
   // Carga mapeo actual de caras desde el backend al entrar a settings
   useEffect(() => {
     if (tabId !== 'settings' || !setDispensers) return;
+    const gen = ++mappingLoadGenRef.current;
     api.getPumpsConfiguration().then(res => {
+      if (gen !== mappingLoadGenRef.current) return;
       if (!res.ok || !Array.isArray(res.data) || res.data.length === 0) return;
       setDispensers((res.data as any[]).map(mapPumpConfigToDispenser));
     }).catch(() => { /* offline — mantiene estado local */ });
@@ -442,6 +454,9 @@ export default function OtherTabs({
     if (!setDispensers) return;
     setPts2Syncing(true);
     setPts2SyncResult(null);
+    // Invalida cualquier carga BD en vuelo para que no pise este sync
+    mappingLoadGenRef.current += 1;
+    const syncGen = mappingLoadGenRef.current;
     try {
       const [pumpsRes, nozzlesRes, fgRes] = await Promise.all([
         api.getPumpsConfigurationPts(),
@@ -451,7 +466,9 @@ export default function OtherTabs({
       if (!pumpsRes.ok) throw new Error('No se pudo leer la configuración de caras del PTS-2');
 
       const pumpsData = (pumpsRes.data as any) ?? {};
-      const pumps: any[] = pumpsData.Pumps ?? pumpsData.pumps ?? [];
+      const pumps: any[] = Array.isArray(pumpsData)
+        ? pumpsData
+        : (pumpsData.Pumps ?? pumpsData.pumps ?? []);
       if (pumps.length === 0) throw new Error('El PTS-2 no tiene caras configuradas');
 
       // FuelGradeId → { fuelType, name }
@@ -473,14 +490,16 @@ export default function OtherTabs({
         });
       }
 
-      // pumpId → mapeo de mangueras con FuelGradeId
+      // pumpId → mapeo de mangueras con FuelGradeId (orden físico del PTS-2)
       const nozzleMap: Record<number, { fuelType: FuelType; fuelGradeId: number; name: string }[]> = {};
       if (nozzlesRes.ok && nozzlesRes.data) {
         const pumpNozzles: any[] = (nozzlesRes.data as any).PumpNozzles ?? (nozzlesRes.data as any).pump_nozzles ?? [];
         pumpNozzles.forEach((pn: any) => {
-          const pid = pn.PumpId ?? pn.pump_id;
+          const pid = Number(pn.PumpId ?? pn.pump_id);
+          if (!pid) return;
           const ids: number[] = pn.FuelGradeIds ?? pn.fuel_grade_ids ?? [];
           nozzleMap[pid] = ids
+            .map((id) => Number(id))
             .filter((id) => id > 0)
             .map((id) => {
               const mapped = fuelNameMap[id] ?? { fuelType: 'Regular Unleaded' as FuelType, name: `Grade ${id}` };
@@ -488,36 +507,47 @@ export default function OtherTabs({
             });
         });
       }
+      if (!nozzlesRes.ok) {
+        throw new Error(nozzlesRes.error || 'No se pudo leer el mapeo de mangueras del PTS-2');
+      }
 
       const newDispensers: DispenserState[] = pumps.map((p: any) => {
-        const id = p.Id ?? p.id;
-        const fuels = nozzleMap[id] ?? [{ fuelType: fuelNameMap[1].fuelType, fuelGradeId: 1, name: fuelNameMap[1].name }];
+        const id = Number(p.Id ?? p.id);
+        const fuels = nozzleMap[id]?.length
+          ? nozzleMap[id]
+          : [{ fuelType: fuelNameMap[1].fuelType, fuelGradeId: 1, name: fuelNameMap[1].name }];
         return {
           id,
-          name: `Cara ${id}`,
-          nozzles: fuels.map((f) => idleNozzle(f.fuelType)),
+          name: String(p.Name ?? p.name ?? `Cara ${id}`),
+          nozzles: fuels.map((f) =>
+            idleNozzle(f.fuelType, { fuelGradeId: f.fuelGradeId, fuelName: f.name }),
+          ),
         };
-      });
+      }).filter((d) => d.id > 0);
 
-      setDispensers(newDispensers);
+      if (newDispensers.length === 0) {
+        throw new Error('El PTS-2 no devolvió caras válidas');
+      }
 
-      // Persistir mapeo completo en BD (no solo el conteo)
-      await Promise.allSettled(
-        newDispensers.map((d) => {
-          const mapped = nozzleMap[d.id] ?? [];
-          return api.saveLocalPumpConfig({
-            pumpId: d.id,
-            name: d.name,
-            nozzlesCount: d.nozzles.length,
-            nozzles: d.nozzles.map((n, i) => ({
-              nozzle: i + 1,
-              fuelGradeId: mapped[i]?.fuelGradeId ?? i + 1,
-              fuelType: n.fuelType,
-              name: mapped[i]?.name ?? n.fuelType,
-            })),
-          });
-        }),
+      // Persistir reemplazo completo en BD (elimina caras obsoletas)
+      const replaceRes = await api.replaceLocalPumpsConfiguration(
+        newDispensers.map((d) => ({
+          pumpId: d.id,
+          name: d.name,
+          nozzlesCount: d.nozzles.length,
+          nozzles: dispenserToNozzleMappings(d),
+        })),
       );
+      if (!replaceRes.ok) {
+        throw new Error(replaceRes.error || 'No se pudo guardar el mapeo en BD');
+      }
+
+      if (syncGen !== mappingLoadGenRef.current) return;
+      // Preferir lo que quedó persistido en BD (fuente de verdad)
+      const fromDb = Array.isArray(replaceRes.data) && replaceRes.data.length > 0
+        ? (replaceRes.data as any[]).map(mapPumpConfigToDispenser)
+        : newDispensers;
+      setDispensers(fromDb);
 
       setPts2SyncResult('ok');
       setTimeout(() => setPts2SyncResult(null), 4000);
@@ -910,36 +940,79 @@ export default function OtherTabs({
         finally { setCaraConfigSaving(false); }
       };
 
-      const handleDeleteCara = (id: number) => {
+      const handleDeleteCara = async (id: number) => {
         if (!setDispensers) return;
-        setDispensers(prev => prev.filter(d => d.id !== id));
+        const next = dispensers.filter(d => d.id !== id);
+        setDispensers(next);
+        try {
+          await api.replaceLocalPumpsConfiguration(
+            next.map((d) => ({
+              pumpId: d.id,
+              name: d.name,
+              nozzlesCount: d.nozzles.length,
+              nozzles: dispenserToNozzleMappings(d),
+            })),
+          );
+        } catch (_) { /* offline */ }
       };
 
-      const handleToggleNozzle = (dispenserId: number, fuelType: FuelType) => {
-        if (!setDispensers) return;
-        setDispensers(prev => {
-          const next = prev.map(d => {
-            if (d.id !== dispenserId) return d;
-            const hasNozzle = d.nozzles.some(n => n.fuelType === fuelType);
-            let nextNozzles;
-            if (hasNozzle) {
-              if (d.nozzles.length <= 1) return d;
-              nextNozzles = d.nozzles.filter(n => n.fuelType !== fuelType);
-            } else {
-              nextNozzles = [...d.nozzles, idleNozzle(fuelType)];
-            }
-            const updated = { ...d, nozzles: nextNozzles };
-            // Persistir mapeo en BD
-            void api.saveLocalPumpConfig({
-              pumpId: updated.id,
-              name: updated.name,
-              nozzlesCount: updated.nozzles.length,
-              nozzles: dispenserToNozzleMappings(updated),
-            });
-            return updated;
-          });
-          return next;
+      const persistDispenserMapping = (updated: DispenserState) => {
+        void api.saveLocalPumpConfig({
+          pumpId: updated.id,
+          name: updated.name,
+          nozzlesCount: updated.nozzles.length,
+          nozzles: dispenserToNozzleMappings(updated),
         });
+      };
+
+      const handleChangeNozzleFuel = (dispenserId: number, nozzleIndex: number, fuelType: FuelType) => {
+        if (!setDispensers) return;
+        setDispensers(prev => prev.map(d => {
+          if (d.id !== dispenserId) return d;
+          const nextNozzles = d.nozzles.map((n, i) => {
+            if (i !== nozzleIndex) return n;
+            return {
+              ...n,
+              fuelType,
+              fuelGradeId: defaultGradeIdForFuel(fuelType, n.fuelGradeId ?? i + 1),
+              fuelName: fuelType,
+            };
+          });
+          const updated = { ...d, nozzles: nextNozzles };
+          persistDispenserMapping(updated);
+          return updated;
+        }));
+      };
+
+      const handleAddNozzle = (dispenserId: number) => {
+        if (!setDispensers) return;
+        setDispensers(prev => prev.map(d => {
+          if (d.id !== dispenserId) return d;
+          if (d.nozzles.length >= 6) return d;
+          const used = new Set(d.nozzles.map(n => n.fuelType));
+          const nextFuel = EDITABLE_FUEL_OPTIONS.find(f => !used.has(f.type))?.type
+            ?? 'Regular Unleaded';
+          const updated = {
+            ...d,
+            nozzles: [...d.nozzles, idleNozzle(nextFuel)],
+          };
+          persistDispenserMapping(updated);
+          return updated;
+        }));
+      };
+
+      const handleRemoveNozzle = (dispenserId: number, nozzleIndex: number) => {
+        if (!setDispensers) return;
+        setDispensers(prev => prev.map(d => {
+          if (d.id !== dispenserId) return d;
+          if (d.nozzles.length <= 1) return d;
+          const updated = {
+            ...d,
+            nozzles: d.nozzles.filter((_, i) => i !== nozzleIndex),
+          };
+          persistDispenserMapping(updated);
+          return updated;
+        }));
       };
 
       const handleAddCustomPayment = (e: React.FormEvent) => {
@@ -2371,11 +2444,11 @@ export default function OtherTabs({
                     <div className="flex items-center gap-1.5">
                       {pts2SyncResult === 'ok' && (
                         <span className="text-emerald-700 text-[10px] font-bold flex items-center gap-1">
-                          <Check className="w-3 h-3" /> Sincronizado
+                          <Check className="w-3 h-3" /> Mapeo actualizado — ya puede editarlo
                         </span>
                       )}
                       {pts2SyncResult === 'error' && (
-                        <span className="text-red-600 text-[10px] font-bold">Sin respuesta del PTS-2</span>
+                        <span className="text-red-600 text-[10px] font-bold">Error al recuperar del PTS-2</span>
                       )}
                       <button
                         type="button"
@@ -2403,63 +2476,82 @@ export default function OtherTabs({
 
                 {dispensers.length === 0 ? (
                   <div className="p-8 text-center text-xs text-slate-400 italic bg-slate-50 border rounded-xl">
-                    No hay caras instaladas. Presione la columna izquierda para instalar una.
+                    No hay caras instaladas. Presione <b>Recuperar desde PTS-2</b> o cree una cara nueva.
                   </div>
                 ) : (
                   dispensers.map((disp) => {
-                    const availableFuels: { type: FuelType; name: string; color: string }[] = [
-                      { type: 'Regular Unleaded', name: 'Regular', color: 'bg-blue-500' },
-                      { type: 'Premium Unleaded', name: 'Súper/Premium', color: 'bg-amber-500' },
-                      { type: 'Diesel', name: 'Diesel', color: 'bg-emerald-500' },
-                      { type: 'Kerosene', name: 'Queroseno', color: 'bg-purple-500' }
-                    ];
-
                     return (
-                      <div key={disp.id} className="p-3 bg-slate-50 border border-neutral-200 rounded-xl hover:bg-slate-100/50 transition-all flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
-                        <div>
-                          <div className="flex items-center gap-2">
+                      <div key={disp.id} className="p-3 bg-slate-50 border border-neutral-200 rounded-xl hover:bg-slate-100/50 transition-all flex flex-col gap-3 shadow-xs">
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-sans font-extrabold text-xs text-slate-800">{disp.name}</span>
                             <span className="bg-[#1b365d]/10 text-[#1b365d] text-[9px] font-mono font-bold px-1.5 rounded-full">ID Disp: {disp.id}</span>
+                            <span className="text-[9px] text-slate-500 font-sans">{disp.nozzles.length} manguera{disp.nozzles.length === 1 ? '' : 's'}</span>
                             {disp.isBlocked && (
                               <span className="bg-red-100 text-red-800 text-[8px] font-bold px-1.5 rounded uppercase font-sans animate-pulse">Bloqueada</span>
                             )}
                           </div>
-                          
-                          {/* Active mapped mangueras */}
-                          <div className="flex flex-wrap gap-1.5 mt-2">
-                            {availableFuels.map((f) => {
-                              const isMapped = disp.nozzles.some(n => n.fuelType === f.type);
-                              return (
-                                <button
-                                  key={f.type}
-                                  type="button"
-                                  onClick={() => handleToggleNozzle(disp.id, f.type)}
-                                  className={`text-[9.5px] font-bold py-0.5 px-2 rounded-full border transition-all flex items-center gap-1 cursor-pointer hover:scale-105 active:scale-95 ${
-                                    isMapped 
-                                      ? 'bg-white border-slate-300 text-slate-800 shadow-xs' 
-                                      : 'bg-slate-200/50 border-transparent text-slate-400 opacity-60'
-                                  }`}
-                                  title={isMapped ? `Remover ${f.type} de ${disp.name}` : `Mapear ${f.type} a ${disp.name}`}
-                                >
-                                  <span className={`w-1.5 h-1.5 rounded-full ${isMapped ? f.color : 'bg-slate-300'}`} />
-                                  <span>{f.name}</span>
-                                  <span className="text-[8px] font-normal leading-none">{isMapped ? '✓' : '+'}</span>
-                                </button>
-                              );
-                            })}
+                          <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
+                            <button
+                              type="button"
+                              onClick={() => handleAddNozzle(disp.id)}
+                              disabled={disp.nozzles.length >= 6}
+                              className="p-1 px-1.5 text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors flex items-center gap-1 cursor-pointer text-xs disabled:opacity-40"
+                              title="Agregar manguera al mapeo"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span className="text-[10px] font-semibold">Manguera</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteCara(disp.id)}
+                              className="p-1 px-1.5 text-slate-400 hover:text-red-700 hover:bg-red-100 rounded-lg transition-colors flex items-center gap-1 cursor-pointer text-xs"
+                              title="Desinstalar cara de pista"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span className="text-[10px] font-semibold">Tirar de Baja</span>
+                            </button>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2 shrink-0 md:self-center self-end">
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteCara(disp.id)}
-                            className="p-1 px-1.5 text-slate-400 hover:text-red-700 hover:bg-red-100 rounded-lg transition-colors flex items-center gap-1 cursor-pointer text-xs"
-                            title="Desinstalar cara de pista"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            <span className="text-[10px] font-semibold">Tirar de Baja</span>
-                          </button>
+                        {/* Mapeo editable por manguera (orden físico PTS-2) */}
+                        <div className="space-y-1.5">
+                          {disp.nozzles.map((n, i) => {
+                            const opt = EDITABLE_FUEL_OPTIONS.find(f => f.type === n.fuelType);
+                            return (
+                              <div
+                                key={`${disp.id}-n-${i}`}
+                                className="flex items-center gap-2 bg-white border border-neutral-200 rounded-lg px-2 py-1.5"
+                              >
+                                <span className="text-[10px] font-bold text-slate-500 w-20 shrink-0 font-sans">
+                                  Manguera {i + 1}
+                                </span>
+                                <span className={`w-2 h-2 rounded-full shrink-0 ${opt?.color ?? 'bg-slate-300'}`} />
+                                <select
+                                  value={n.fuelType}
+                                  onChange={(e) => handleChangeNozzleFuel(disp.id, i, e.target.value as FuelType)}
+                                  className="flex-1 min-w-0 text-[11px] font-semibold text-slate-800 bg-transparent border border-slate-200 rounded px-2 py-1 cursor-pointer focus:outline-none focus:border-[#355e9e]"
+                                  title="Cambiar combustible de esta manguera"
+                                >
+                                  {EDITABLE_FUEL_OPTIONS.map((f) => (
+                                    <option key={f.type} value={f.type}>{f.name}</option>
+                                  ))}
+                                </select>
+                                <span className="text-[9px] font-mono text-slate-400 shrink-0" title="FuelGradeId PTS-2">
+                                  FG:{n.fuelGradeId ?? defaultGradeIdForFuel(n.fuelType, i + 1)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveNozzle(disp.id, i)}
+                                  disabled={disp.nozzles.length <= 1}
+                                  className="p-1 text-slate-400 hover:text-red-600 disabled:opacity-30 cursor-pointer"
+                                  title="Quitar manguera"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     );

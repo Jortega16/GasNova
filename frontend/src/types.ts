@@ -30,6 +30,10 @@ export interface NozzleState {
   pendingTransactions?: NozzleTransaction[];
   /** ID real de la transacción en el PTS-2, capturado en EndOfTransaction. */
   ptsTransactionId?: string;
+  /** FuelGradeId del PTS-2 / BD (mapeo de manguera). */
+  fuelGradeId?: number;
+  /** Nombre de grado tal como viene del PTS-2. */
+  fuelName?: string;
 }
 
 export interface DispenserState {
