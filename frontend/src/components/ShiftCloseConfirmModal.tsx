@@ -43,12 +43,14 @@ export default function ShiftCloseConfirmModal({
   const [step, setStep] = useState<1 | 2>(1);
   /** Totales de cierre (absolutos PTS) por cara */
   const [closingCounters, setClosingCounters] = useState<Record<number, { vol: number; amt: number; ok: boolean }>>({});
+  const [openingCountersLocal, setOpeningCountersLocal] = useState<Record<number, { volume: number; amount: number }>>({});
   const [countersLoading, setCountersLoading] = useState(false);
   const [countersAttempted, setCountersAttempted] = useState(false);
 
   useEffect(() => {
     if (!show) {
       setClosingCounters({});
+      setOpeningCountersLocal({});
       setCountersAttempted(false);
       setCountersLoading(false);
       setStep(1);
@@ -57,7 +59,31 @@ export default function ShiftCloseConfirmModal({
     setStep(1);
     setCountersLoading(true);
     setCountersAttempted(false);
+
+    // Seed from props if already available
+    const seed: Record<number, { volume: number; amount: number }> = {};
+    (shiftDetails.openingCounters || []).forEach(row => {
+      seed[row.pump_id] = { volume: row.volume, amount: row.amount };
+    });
+    setOpeningCountersLocal(seed);
+
     const fetchAll = async () => {
+      let openingMap = { ...seed };
+      // Sin snapshot de apertura no se puede calcular PTS turno = cierre − apertura.
+      if (Object.keys(openingMap).length === 0 && shiftDetails.shiftId) {
+        const cap = await api.captureShiftOpeningCounters(shiftDetails.shiftId).catch(() => null);
+        const rows = (cap?.ok && Array.isArray((cap.data as any)?.opening_counters))
+          ? (cap.data as any).opening_counters as Array<{ pump_id: number; volume: number; amount: number }>
+          : [];
+        rows.forEach(row => {
+          openingMap[Number(row.pump_id)] = {
+            volume: Number(row.volume || 0),
+            amount: Number(row.amount || 0),
+          };
+        });
+        setOpeningCountersLocal(openingMap);
+      }
+
       const results: Record<number, { vol: number; amt: number; ok: boolean }> = {};
       await Promise.allSettled(
         dispensers.map(async d => {
@@ -74,7 +100,7 @@ export default function ShiftCloseConfirmModal({
       setCountersLoading(false);
     };
     fetchAll();
-  }, [show, dispensers]);
+  }, [show, dispensers, shiftDetails.shiftId, shiftDetails.openingCounters]);
 
   if (!show) return null;
 
@@ -95,18 +121,14 @@ export default function ShiftCloseConfirmModal({
     const c = closingCounters[d.id];
     return !c || !c.ok;
   });
+  const missingOpening = countersAttempted && dispensers.some(d => openingCountersLocal[d.id] == null);
   const canConfirm =
     pendingCount === 0 &&
     !unpaidOpen &&
     !countersLoading &&
     countersAttempted &&
-    !countersFailed;
-
-
-  const openingByPump = new Map<number, { volume: number; amount: number }>();
-  (shiftDetails.openingCounters || []).forEach(row => {
-    openingByPump.set(row.pump_id, { volume: row.volume, amount: row.amount });
-  });
+    !countersFailed &&
+    !missingOpening;
 
   // Sales by fuel type
   const fuelRows = (["Regular Unleaded", "Premium Unleaded", "Diesel", "Kerosene", "LPG"] as FuelType[]).map(key => ({
@@ -131,17 +153,18 @@ export default function ShiftCloseConfirmModal({
   const nozzleRows = Array.from(nozzleMap.values()).sort((a, b) => a.pumpName.localeCompare(b.pumpName));
 
   // Counter per dispenser: Sistema (POS) vs PTS turno (cierre − apertura)
+  // Nunca usar lifetime del surtidor como "PTS turno" si falta apertura.
   const counterRows = dispensers.map(d => {
     const systemVol = transactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.volume, 0);
     const systemAmt = transactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.amount, 0);
     const count = transactions.filter(t => t.pumpId === d.id).length;
     const closing = closingCounters[d.id];
-    const opening = openingByPump.get(d.id);
+    const opening = openingCountersLocal[d.id];
     const hasOpening = opening != null;
     const hasClosing = !!(closing && closing.ok);
     const ptsDelta = hasOpening && hasClosing
       ? closing!.vol - opening!.volume
-      : (hasClosing ? closing!.vol : null);
+      : null;
     const diff = ptsDelta != null ? ptsDelta - systemVol : null;
     return {
       id: d.id,
@@ -322,10 +345,11 @@ export default function ShiftCloseConfirmModal({
                   <thead>
                     <tr className="bg-slate-50 border-b border-neutral-200">
                       <th className="text-left px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Cara</th>
-                      <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Sist. {unit}</th>
+                      <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Apertura</th>
+                      <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Cierre</th>
                       <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">PTS turno</th>
+                      <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Sist.</th>
                       <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Dif.</th>
-                      <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">#</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -334,10 +358,16 @@ export default function ShiftCloseConfirmModal({
                       return (
                         <tr key={r.id} className="border-b border-neutral-100 last:border-0 hover:bg-slate-50">
                           <td className="px-3 py-1.5 font-semibold text-slate-700">{r.name}</td>
-                          <td className="px-3 py-1.5 text-right font-mono text-slate-600">{r.vol.toFixed(2)}</td>
-                          <td className="px-3 py-1.5 text-right font-mono text-slate-600">
-                            {r.ptsDelta != null ? r.ptsDelta.toFixed(2) : (r.hasClosing ? '—' : 'sin lectura')}
+                          <td className="px-3 py-1.5 text-right font-mono text-slate-500 text-[11px]">
+                            {r.openingVol != null ? r.openingVol.toFixed(2) : '—'}
                           </td>
+                          <td className="px-3 py-1.5 text-right font-mono text-slate-500 text-[11px]">
+                            {r.closingVol != null ? r.closingVol.toFixed(2) : '—'}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono text-slate-700 font-bold">
+                            {r.ptsDelta != null ? r.ptsDelta.toFixed(2) : '—'}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono text-slate-600">{r.vol.toFixed(2)}</td>
                           <td className={`px-3 py-1.5 text-right font-bold ${
                             diff == null ? 'text-slate-400' :
                             diff === 0 ? 'text-emerald-600' : Math.abs(diff) < 0.05 ? 'text-emerald-600' :
@@ -345,7 +375,6 @@ export default function ShiftCloseConfirmModal({
                           }`}>
                             {diff == null ? '—' : `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}`}
                           </td>
-                          <td className="px-3 py-1.5 text-right text-slate-400">{r.count}</td>
                         </tr>
                       );
                     })}
@@ -353,8 +382,13 @@ export default function ShiftCloseConfirmModal({
                 </table>
               </div>
               <p className="text-[10px] text-slate-400 px-1">
-                PTS turno = totalizador al cierre − totalizador al abrir el turno. Dif. = PTS turno − ventas del sistema.
+                PTS turno = contador al cierre − contador al abrir (fin del turno anterior). Dif. = PTS turno − ventas del sistema ({unit}).
               </p>
+              {missingOpening && !countersLoading && (
+                <p className="text-[11px] font-bold text-rose-600 px-1">
+                  Falta snapshot de apertura — no se puede calcular la venta del turno.
+                </p>
+              )}
             </div>
 
           </div>
@@ -392,6 +426,8 @@ export default function ShiftCloseConfirmModal({
                         ? 'Espere a que terminen de leerse los contadores del PTS.'
                         : countersFailed
                           ? 'No se pudieron leer los contadores del PTS-2 en una o más caras. Verifique la conexión y reabra el cierre.'
+                          : missingOpening
+                            ? 'No hay contadores de apertura del turno — reabra el cierre para capturarlos.'
                           : 'No se puede confirmar el cierre todavía.'}
                 </p>
               )}

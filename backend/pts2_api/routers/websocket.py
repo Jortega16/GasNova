@@ -196,21 +196,33 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
             auth_shift_id = _consume_auth_shift(websocket, pump_id_val)
 
             # No hubo despacho real (manguera levantada y colgada sin surtir
-            # combustible): no crear una "venta" fantasma de $0.00 / 0 litros.
-            upload_volume = data.get("Volume") or 0
-            upload_amount = data.get("Amount") or 0
-            if upload_volume <= 0 and upload_amount <= 0:
+            # combustible): no crear una "venta" fantasma. También ignora si
+            # nunca hubo PumpFillingStatus desde la última autorización — el
+            # PTS a menudo reenvía Volume/Amount de la trx anterior.
+            upload_volume = float(data.get("Volume") or 0)
+            upload_amount = float(data.get("Amount") or 0)
+            fill = live_state.get_fill_cycle(pump_id_val)
+            no_live_fill = (
+                not fill.get("fill_seen")
+                and float(fill.get("peak_volume") or 0) <= 0
+                and float(fill.get("peak_amount") or 0) <= 0
+            )
+            if (upload_volume <= 0 and upload_amount <= 0) or no_live_fill:
                 logger.info(
-                    "UploadPumpTransaction sin despacho real (volume=0, amount=0) — ignorado. pump=%s",
+                    "UploadPumpTransaction sin despacho real — ignorado. pump=%s vol=%s amt=%s fill_seen=%s",
                     pump_id_val,
+                    upload_volume,
+                    upload_amount,
+                    fill.get("fill_seen"),
                 )
+                live_state.reset_fill_cycle(pump_id_val)
             else:
                 upsert_pending_transaction(
                     db,
                     pump_id=pump_id_val,
                     nozzle=data.get("Nozzle"),
-                    volume=data.get("Volume"),
-                    amount=data.get("Amount"),
+                    volume=upload_volume,
+                    amount=upload_amount,
                     fuel_type=data.get("FuelGradeName") or data.get("Product") or data.get("ProductName"),
                     trx_id=trx_id,
                     pts_transaction_id=str(transaction) if transaction is not None else trx_id,
@@ -221,6 +233,7 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
                     pos_terminal_code=str(data.get("Terminal") or data.get("PosTerminalCode") or "") or None,
                     shift_id=auth_shift_id,
                 )
+                live_state.reset_fill_cycle(pump_id_val)
         except Exception as exc:
             logger.error("Error saving PendingTransaction: %s", exc)
             db.rollback()

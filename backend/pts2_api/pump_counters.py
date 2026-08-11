@@ -167,18 +167,12 @@ def build_shift_counter_breakdown(
             "closing_volume": round(float(closing_volume), 3) if has_closing else None,
             "opening_amount": round(float(opening_amount or 0), 3) if has_opening else None,
             "closing_amount": round(float(closing_amount or 0), 3) if has_closing else None,
-            # "mecánico del turno" = delta; fallback al total de cierre si no hubo apertura
-            "mech_volume": mech_delta_vol if mech_delta_vol is not None else (
-                round(float(closing_volume), 3) if has_closing else 0.0
-            ),
-            "mech_amount": mech_delta_amt if mech_delta_amt is not None else (
-                round(float(closing_amount or 0), 3) if has_closing else 0.0
-            ),
+            # "mecánico del turno" = delta; sin apertura no inventar lifetime
+            "mech_volume": mech_delta_vol if mech_delta_vol is not None else None,
+            "mech_amount": mech_delta_amt if mech_delta_amt is not None else None,
             "system_volume": system_volume,
             "system_amount": system_amount,
-            "diff_volume": diff_volume if diff_volume is not None else (
-                round((float(closing_volume) if has_closing else 0) - system_volume, 3)
-            ),
+            "diff_volume": diff_volume,
             "dispatch_count": dispatch_count,
             "has_opening_snapshot": has_opening,
         })

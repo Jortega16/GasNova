@@ -480,11 +480,14 @@ def _build_closure_bytes(req: PrintClosureRequest, cfg: Dict[str, Any] = _print_
         buf += _div('-', W)
         for cb in req.counter_breakdown:
             name         = _safe(cb.get("pump_name", f"Cara {cb.get('pump_id', '?')}"))
-            sys_vol      = cb.get("system_volume", 0.0)
-            mech_vol     = cb.get("mech_volume", 0.0)
+            sys_vol      = float(cb.get("system_volume") or 0.0)
+            mech_vol_raw = cb.get("mech_volume")
+            mech_vol     = float(mech_vol_raw) if mech_vol_raw is not None else 0.0
             diff         = cb.get("diff_volume")
-            if diff is None:
+            if diff is None and mech_vol_raw is not None:
                 diff = mech_vol - sys_vol
+            if diff is None:
+                continue
             diff_str     = f"{'+' if diff >= 0 else ''}{float(diff):.2f} {unit_suffix}"
             buf += _enc(f"  {name[:W-2]}") + LF
             open_vol = cb.get("opening_volume")

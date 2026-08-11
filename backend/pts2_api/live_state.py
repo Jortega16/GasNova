@@ -31,6 +31,10 @@ class _PumpSnapshot:
     amount: float | None
     transaction: Any | None
     updated_at: float
+    # Pico de despacho desde la última autorización (detecta lift/hang sin surtir)
+    fill_peak_volume: float = 0.0
+    fill_peak_amount: float = 0.0
+    fill_seen: bool = False
 
 
 @dataclass
@@ -46,6 +50,40 @@ class LiveStateStore:
         self._lock = threading.Lock()
         self._pumps: dict[int, _PumpSnapshot] = {}
         self._tanks: dict[int, _TankSnapshot] = {}
+
+    def reset_fill_cycle(self, pump_id: int) -> None:
+        """Reinicia el pico de despacho (llamar al autorizar / cerrar trx)."""
+        with self._lock:
+            existing = self._pumps.get(pump_id)
+            if existing is None:
+                self._pumps[pump_id] = _PumpSnapshot(
+                    status_type=None,
+                    nozzle=None,
+                    nozzle_prices=None,
+                    volume=None,
+                    amount=None,
+                    transaction=None,
+                    updated_at=time.monotonic(),
+                    fill_peak_volume=0.0,
+                    fill_peak_amount=0.0,
+                    fill_seen=False,
+                )
+                return
+            existing.fill_peak_volume = 0.0
+            existing.fill_peak_amount = 0.0
+            existing.fill_seen = False
+
+    def get_fill_cycle(self, pump_id: int) -> dict[str, Any]:
+        """Estado de despacho real desde la última autorización."""
+        with self._lock:
+            snap = self._pumps.get(pump_id)
+            if snap is None:
+                return {"fill_seen": False, "peak_volume": 0.0, "peak_amount": 0.0}
+            return {
+                "fill_seen": bool(snap.fill_seen),
+                "peak_volume": float(snap.fill_peak_volume or 0),
+                "peak_amount": float(snap.fill_peak_amount or 0),
+            }
 
     def update_pump(
         self,
@@ -68,6 +106,28 @@ class LiveStateStore:
         with self._lock:
             existing = self._pumps.get(pump_id)
             prices = nozzle_prices if nozzle_prices else (existing.nozzle_prices if existing else None)
+            peak_vol = existing.fill_peak_volume if existing else 0.0
+            peak_amt = existing.fill_peak_amount if existing else 0.0
+            fill_seen = existing.fill_seen if existing else False
+
+            # Acumula pico solo durante Filling (despacho real)
+            st = (status_type or "").lower()
+            is_filling = (
+                status_type == "PumpFillingStatus"
+                or "filling" in st
+                or "fueling" in st
+            )
+            if is_filling:
+                try:
+                    v = float(volume or 0)
+                    a = float(amount or 0)
+                except (TypeError, ValueError):
+                    v, a = 0.0, 0.0
+                if v > 0 or a > 0:
+                    fill_seen = True
+                    peak_vol = max(peak_vol, v)
+                    peak_amt = max(peak_amt, a)
+
             self._pumps[pump_id] = _PumpSnapshot(
                 status_type=status_type,
                 nozzle=nozzle,
@@ -76,6 +136,9 @@ class LiveStateStore:
                 amount=amount,
                 transaction=transaction,
                 updated_at=time.monotonic(),
+                fill_peak_volume=peak_vol,
+                fill_peak_amount=peak_amt,
+                fill_seen=fill_seen,
             )
 
     def update_tank(self, tank_id: int, data: dict[str, Any]) -> None:

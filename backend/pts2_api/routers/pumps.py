@@ -176,6 +176,8 @@ def authorize(
         auth_shifts[pump_id] = shift_at_auth
         req.app.state.pump_auth_shifts = auth_shifts
 
+    live_state.reset_fill_cycle(pump_id)
+
     try:
         pts_data: dict[str, Any] = {"Pump": pump_id}
         if request.nozzle is not None:
@@ -489,6 +491,8 @@ def postpay_authorize(
         auth_shifts: dict[int, str] = getattr(req.app.state, "pump_auth_shifts", {})
         auth_shifts[pump_id] = shift_at_auth
         req.app.state.pump_auth_shifts = auth_shifts
+
+    live_state.reset_fill_cycle(pump_id)
 
     try:
         data = client.pumps.authorize_free(pump_id, nozzle=request.nozzle)
@@ -973,18 +977,31 @@ def capture_pending_transaction_from_pts(
     )
 
     # No hubo despacho real (manguera levantada y colgada sin surtir combustible):
-    # no crear una "venta" fantasma de $0.00 / 0 litros en pending_transactions.
-    captured_volume = data.get("Volume") or data.get("LastVolume") or 0
-    captured_amount = data.get("Amount") or data.get("LastAmount") or 0
-    if captured_volume <= 0 and captured_amount <= 0:
+    # no crear una "venta" fantasma. GetTransactionInformation a menudo devuelve
+    # la trx ANTERIOR (LastVolume/LastAmount), así que también exigimos pico de
+    # Filling observado desde la última autorización.
+    captured_volume = float(data.get("Volume") or data.get("LastVolume") or 0)
+    captured_amount = float(data.get("Amount") or data.get("LastAmount") or 0)
+    fill = live_state.get_fill_cycle(pump_id)
+    no_live_fill = not fill.get("fill_seen") and float(fill.get("peak_volume") or 0) <= 0 and float(fill.get("peak_amount") or 0) <= 0
+    if (captured_volume <= 0 and captured_amount <= 0) or no_live_fill:
+        live_state.reset_fill_cycle(pump_id)
         return CommandResponse(data={
             "created": False,
             "skipped": True,
-            "message": "Sin despacho real (volumen y monto en cero) — no se registró como venta.",
+            "message": "Sin despacho real (solo levantó/bajó manguera) — no se registró como venta.",
             "trx_id": trx_id,
             "volume": 0.0,
             "amount": 0.0,
         })
+
+    # Preferir pico live si GetTransactionInformation trajo totales viejos
+    peak_vol = float(fill.get("peak_volume") or 0)
+    peak_amt = float(fill.get("peak_amount") or 0)
+    if peak_vol > 0:
+        captured_volume = peak_vol
+    if peak_amt > 0:
+        captured_amount = peak_amt
 
     # Recupera el shift capturado en el momento de la autorización (gap #4).
     auth_shifts: dict = getattr(req.app.state, "pump_auth_shifts", {})
@@ -996,8 +1013,8 @@ def capture_pending_transaction_from_pts(
         pump_id=pump_id,
         trx_id=trx_id,
         nozzle=data.get("Nozzle") or data.get("LastNozzle"),
-        volume=data.get("Volume") or data.get("LastVolume"),
-        amount=data.get("Amount") or data.get("LastAmount"),
+        volume=captured_volume,
+        amount=captured_amount,
         fuel_type=data.get("FuelGradeName") or data.get("Product") or data.get("LastFuelGradeName"),
         pts_transaction_id=trx_id,
         raw_payload=data,
@@ -1007,6 +1024,7 @@ def capture_pending_transaction_from_pts(
         pos_terminal_code=str(data.get("Terminal") or data.get("PosTerminalCode") or "") or None,
         shift_id=auth_shift_id,
     )
+    live_state.reset_fill_cycle(pump_id)
     response = serialize_pending_transaction(pending)
     response["created"] = created
     response["source"] = "PTS-2"

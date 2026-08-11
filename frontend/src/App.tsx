@@ -49,10 +49,14 @@ const getShiftNameFromId = (id: string, shiftBrackets: any[]) => {
   const lastPart = parts[parts.length - 1];
   const shiftNum = parseInt(lastPart, 10);
   if (isNaN(shiftNum)) return 'Matutino';
+  const defaults = ['Matutino', 'Vespertino', 'Nocturno'];
+  if (!shiftBrackets || shiftBrackets.length === 0) {
+    return defaults[(shiftNum - 1) % defaults.length];
+  }
   const index = (shiftNum - 1) % shiftBrackets.length;
   const bracket = shiftBrackets[index];
-  if (!bracket) return 'Matutino';
-  return bracket.name.replace('Turno ', '');
+  if (!bracket) return defaults[(shiftNum - 1) % defaults.length];
+  return String(bracket.name || '').replace('Turno ', '') || defaults[(shiftNum - 1) % defaults.length];
 };
 
 const getOperationalInitialDispensers = (): DispenserState[] => (
@@ -545,8 +549,31 @@ export default function App() {
             }
 
             if (pts2Status === 'EndOfTransaction' && isActiveNozzle) {
-              const lastVol = pumpData.last_volume ?? nozzle.currentVolume;
-              const lastAmt = pumpData.last_amount ?? nozzle.currentAmount;
+              // Preferir totales live del ciclo actual. LastVolume/LastAmount del PTS
+              // suelen ser de la trx ANTERIOR si solo levantó/bajó sin surtir.
+              const liveVol = Number(nozzle.currentVolume || 0);
+              const liveAmt = Number(nozzle.currentAmount || 0);
+              const wasDispensing = nozzle.status === 'Dispensing';
+              const hadRealFill = wasDispensing || liveVol > 0 || liveAmt > 0;
+
+              // Solo levantó y bajó manguera → no capturar venta fantasma
+              if (!hadRealFill && !nozzle.ptsTransactionId) {
+                const pumpIdHang = dispenser.id;
+                setTimeout(() => { api.closeTransaction(pumpIdHang); }, 10);
+                return {
+                  ...nozzle,
+                  status: 'Idle',
+                  currentVolume: 0,
+                  currentAmount: 0,
+                  progressPercent: 0,
+                  limitAmount: undefined,
+                  isPostpaid: false,
+                  ptsTransactionId: undefined,
+                };
+              }
+
+              const lastVol = liveVol > 0 ? liveVol : Number(pumpData.last_volume ?? pumpData.volume ?? 0);
+              const lastAmt = liveAmt > 0 ? liveAmt : Number(pumpData.last_amount ?? pumpData.amount ?? 0);
               const isPrep = nozzle.status === 'Prepaid' || (!!nozzle.limitAmount && !nozzle.isPostpaid);
 
               // Estado 4: fin de despacho con manguera aún levantada.
@@ -557,35 +584,75 @@ export default function App() {
 
                 setTimeout(async () => {
                   const captureRes = await api.capturePendingTransaction(pumpIdCapture);
+                  const skipped = !!(captureRes.ok && (captureRes.data as any)?.skipped);
+                  if (skipped) {
+                    api.closeTransaction(pumpIdCapture);
+                    setDispensers(prev => prev.map(d => d.id === pumpIdCapture ? {
+                      ...d,
+                      nozzles: d.nozzles.map(n => n.fuelType === nozzleFuelType ? {
+                        ...n,
+                        status: 'Idle' as PumpStatus,
+                        currentVolume: 0,
+                        currentAmount: 0,
+                        progressPercent: 0,
+                        limitAmount: undefined,
+                        isPostpaid: false,
+                        ptsTransactionId: undefined,
+                      } : n),
+                    } : d));
+                    return;
+                  }
+
                   const realTrxId = captureRes.ok && captureRes.data
-                    ? captureRes.data.trx_id
+                    ? String((captureRes.data as any).trx_id || (captureRes.data as any).id)
                     : `TRX-${pumpIdCapture}-${Date.now()}`;
+                  const capVol = captureRes.ok && captureRes.data
+                    ? Number((captureRes.data as any).volume ?? lastVol)
+                    : lastVol;
+                  const capAmt = captureRes.ok && captureRes.data
+                    ? Number((captureRes.data as any).amount ?? lastAmt)
+                    : lastAmt;
 
                   // Cierra en PTS-2 sin esperar el cobro
                   api.closeTransaction(pumpIdCapture);
+
+                  if (capVol <= 0 && capAmt <= 0) {
+                    setDispensers(prev => prev.map(d => d.id === pumpIdCapture ? {
+                      ...d,
+                      nozzles: d.nozzles.map(n => n.fuelType === nozzleFuelType ? {
+                        ...n,
+                        status: 'Idle' as PumpStatus,
+                        currentVolume: 0,
+                        currentAmount: 0,
+                        progressPercent: 0,
+                        ptsTransactionId: undefined,
+                      } : n),
+                    } : d));
+                    return;
+                  }
 
                   setDispensers(prev => prev.map(d => d.id === pumpIdCapture ? {
                     ...d,
                     nozzles: d.nozzles.map(n => n.fuelType === nozzleFuelType ? {
                       ...n,
                       ptsTransactionId: realTrxId,
+                      currentVolume: capVol,
+                      currentAmount: capAmt,
                     } : n),
                   } : d));
 
                   if (isPrep) {
-                    const vol = captureRes.ok && captureRes.data ? captureRes.data.volume : lastVol;
-                    const amt = captureRes.ok && captureRes.data ? captureRes.data.amount : lastAmt;
-                    completeFuelingJob(pumpIdCapture, vol, amt, nozzleFuelType, 'Cash', realTrxId);
+                    completeFuelingJob(pumpIdCapture, capVol, capAmt, nozzleFuelType, 'Cash', realTrxId);
 
                     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                     setAlerts(prev => [{
                       id: `AL-PAID-${Math.random()}`,
                       dateTime: `Hoy ${timeStr}`,
                       pumpName: `Cara ${pumpIdCapture}`,
-                      volume: formatVolume(vol, unitMeasure),
-                      amount: `$${amt.toFixed(2)}`,
+                      volume: formatVolume(capVol, unitMeasure),
+                      amount: `$${capAmt.toFixed(2)}`,
                       paymentType: 'Cash',
-                      message: `✓ Prepago completado: $${amt.toFixed(2)} — Cara ${pumpIdCapture} (${nozzleFuelType}) — Trx ${realTrxId}`,
+                      message: `✓ Prepago completado: $${capAmt.toFixed(2)} — Cara ${pumpIdCapture} (${nozzleFuelType}) — Trx ${realTrxId}`,
                       isCustomNote: true,
                     }, ...prev]);
                   }
@@ -2724,6 +2791,29 @@ export default function App() {
       });
       setTransactions([]);
       setNextShiftData(newShift);
+
+      // Confirmar contra BD (evita footer pegado al turno anterior)
+      api.getShifts().then(listRes => {
+        if (!listRes.ok || !Array.isArray(listRes.data)) return;
+        const active = (listRes.data as any[]).find((s: any) => s.status === 'Active');
+        if (!active?.shift_id) return;
+        const openingRows = Array.isArray(active.opening_counters)
+          ? active.opening_counters.map((row: any) => ({
+              pump_id: Number(row.pump_id),
+              pump_name: row.pump_name,
+              volume: Number(row.volume || 0),
+              amount: Number(row.amount || 0),
+            }))
+          : opening;
+        setShiftDetails({
+          shiftId: active.shift_id,
+          operatorName: active.operator_name || currentUser?.name || shiftDetails.operatorName,
+          startTime: active.start_time || endTimeStr,
+          endTime: '',
+          status: 'Active',
+          openingCounters: openingRows,
+        });
+      }).catch(() => { /* offline — ya aplicamos new_shift local */ });
     } else {
       setShiftDetails(prev => ({
         ...prev,
@@ -3600,17 +3690,7 @@ export default function App() {
       {/* Footer element */}
       <Footer
         shiftId={shiftDetails.shiftId}
-        shiftName={(() => {
-          if (!shiftDetails.shiftId) return 'Matutino';
-          const parts = shiftDetails.shiftId.split('-');
-          const lastPart = parts[parts.length - 1];
-          const shiftNum = parseInt(lastPart, 10);
-          if (isNaN(shiftNum)) return 'Matutino';
-          const index = (shiftNum - 1) % shiftBrackets.length;
-          const bracket = shiftBrackets[index];
-          if (!bracket) return 'Matutino';
-          return bracket.name.replace('Turno ', '');
-        })()}
+        shiftName={getShiftNameFromId(shiftDetails.shiftId, shiftBrackets)}
         isSimulating={isSimulating}
         setIsSimulating={setIsSimulating}
         onManualSync={handleManualSync}
