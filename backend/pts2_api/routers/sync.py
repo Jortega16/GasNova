@@ -189,8 +189,8 @@ def sync_pump_transactions(
         amount = float(trx.get("Amount") or 0)
         is_paid = trx.get("IsPaid")
 
-        # Sin despacho real: no recuperar fantasma de $0
-        if volume <= 0 and amount <= 0:
+        # Sin despacho real: no recuperar fantasma de $0.00 / 0 L
+        if volume <= 0 or amount <= 0:
             skipped_zero += 1
             continue
 

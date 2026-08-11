@@ -73,7 +73,7 @@ from sqlalchemy.orm import Session
 from ..database import SessionLocal
 from ..models import TankMeasurement, InTankDelivery, SystemAlert, PumpEventLog
 from ..transaction_store import upsert_pending_transaction
-from ..volume_utils import derive_volume, resolve_unit_price
+from ..volume_utils import derive_volume, is_zero_sale, resolve_unit_price
 import json
 import logging
 import threading
@@ -237,23 +237,37 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
                         unit_price = float(prices[nz_i - 1] or 0) or None
                 upload_volume = derive_volume(upload_volume, upload_amount, unit_price)
 
-                upsert_pending_transaction(
-                    db,
-                    pump_id=pump_id_val,
-                    nozzle=data.get("Nozzle"),
-                    volume=upload_volume,
-                    amount=upload_amount,
-                    fuel_type=data.get("FuelGradeName") or data.get("Product") or data.get("ProductName"),
-                    trx_id=trx_id,
-                    pts_transaction_id=str(transaction) if transaction is not None else trx_id,
-                    raw_payload=data,
-                    started_at=data.get("DateTimeStart") or data.get("DateTime"),
-                    completed_at=data.get("DateTimeEnd") or data.get("DateTime"),
-                    station_code=str(data.get("Station") or data.get("StationCode") or "") or None,
-                    pos_terminal_code=str(data.get("Terminal") or data.get("PosTerminalCode") or "") or None,
-                    shift_id=auth_shift_id,
-                )
-                live_state.reset_fill_cycle(pump_id_val)
+                if is_zero_sale(upload_volume, upload_amount):
+                    logger.info(
+                        "UploadPumpTransaction venta cero — ignorado. pump=%s vol=%s amt=%s",
+                        pump_id_val,
+                        upload_volume,
+                        upload_amount,
+                    )
+                    live_state.reset_fill_cycle(pump_id_val)
+                else:
+                    try:
+                        upsert_pending_transaction(
+                            db,
+                            pump_id=pump_id_val,
+                            nozzle=data.get("Nozzle"),
+                            volume=upload_volume,
+                            amount=upload_amount,
+                            fuel_type=data.get("FuelGradeName") or data.get("Product") or data.get("ProductName"),
+                            trx_id=trx_id,
+                            pts_transaction_id=str(transaction) if transaction is not None else trx_id,
+                            raw_payload=data,
+                            started_at=data.get("DateTimeStart") or data.get("DateTime"),
+                            completed_at=data.get("DateTimeEnd") or data.get("DateTime"),
+                            station_code=str(data.get("Station") or data.get("StationCode") or "") or None,
+                            pos_terminal_code=str(data.get("Terminal") or data.get("PosTerminalCode") or "") or None,
+                            shift_id=auth_shift_id,
+                        )
+                    except ValueError as exc:
+                        if str(exc) != "zero_sale_rejected":
+                            raise
+                        logger.info("UploadPumpTransaction rechazado (venta cero). pump=%s", pump_id_val)
+                    live_state.reset_fill_cycle(pump_id_val)
         except Exception as exc:
             logger.error("Error saving PendingTransaction: %s", exc)
             db.rollback()

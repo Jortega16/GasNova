@@ -33,7 +33,7 @@ from ..transaction_store import (
     serialize_pending_transaction,
     upsert_pending_transaction,
 )
-from ..volume_utils import derive_volume, resolve_unit_price
+from ..volume_utils import derive_volume, is_zero_sale, resolve_unit_price
 
 router = APIRouter(prefix="/pumps", tags=["pumps"])
 
@@ -899,7 +899,11 @@ def replace_local_pumps_configuration(
 def list_pending_transactions(db: Session = Depends(get_db)) -> CommandResponse:
     """Retorna la lista completa de despachos acumulados en pistolas (cola transitoria)."""
     pending = db.query(PendingTransaction).all()
-    serialized = [serialize_pending_transaction(p) for p in pending]
+    serialized = [
+        serialize_pending_transaction(p)
+        for p in pending
+        if not is_zero_sale(p.volume, p.amount)
+    ]
     return CommandResponse(data=serialized)
 
 
@@ -914,14 +918,12 @@ def create_pending_transaction(
     db: Session = Depends(get_db),
 ) -> CommandResponse:
     """Almacena un despacho pendiente de forma transitoria en la base de datos."""
-    # No hubo despacho real (manguera levantada y colgada sin surtir combustible):
-    # no crear una "venta" fantasma de $0.00 / 0 litros. Misma guarda que en el
-    # endpoint de captura y en el handler de WebSocket.
-    if (request.volume or 0) <= 0 and (request.amount or 0) <= 0:
+    # Nunca registrar ventas en $0.00 o 0 litros
+    if is_zero_sale(request.volume, request.amount):
         return CommandResponse(data={
             "created": False,
             "skipped": True,
-            "message": "Sin despacho real (volumen y monto en cero) — no se registró como venta.",
+            "message": "Sin despacho real (monto o volumen en cero) — no se registró como venta.",
             "trx_id": request.trx_id,
         })
 
@@ -1014,6 +1016,18 @@ def capture_pending_transaction_from_pts(
         if nz_i > 0 and prices and 0 <= (nz_i - 1) < len(prices):
             unit_price = float(prices[nz_i - 1] or 0) or None
     captured_volume = derive_volume(captured_volume, captured_amount, unit_price)
+
+    # Tras derivar: aún sin monto o volumen → no crear venta $0.00
+    if is_zero_sale(captured_volume, captured_amount):
+        live_state.reset_fill_cycle(pump_id)
+        return CommandResponse(data={
+            "created": False,
+            "skipped": True,
+            "message": "Sin despacho real (monto o volumen en cero) — no se registró como venta.",
+            "trx_id": trx_id,
+            "volume": float(captured_volume or 0),
+            "amount": float(captured_amount or 0),
+        })
 
     # Recupera el shift capturado en el momento de la autorización (gap #4).
     auth_shifts: dict = getattr(req.app.state, "pump_auth_shifts", {})

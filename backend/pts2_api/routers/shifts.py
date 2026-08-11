@@ -339,6 +339,10 @@ def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> Com
         if volume_val <= 0 and amount_val > 0 and t.unit_price and t.unit_price > 0:
             volume_val = amount_val / float(t.unit_price)
 
+        # No listar ventas en $0.00 / 0 litros
+        if volume_val <= 0 or amount_val <= 0:
+            continue
+
         date_str = t.created_at.strftime("%Y-%m-%d %I:%M %p") if t.created_at else "N/A"
 
         serialized.append({

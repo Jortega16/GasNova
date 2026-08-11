@@ -27,6 +27,12 @@ import { useVisibilityPolling } from './hooks/useVisibilityPolling';
 import { useLiveState } from './hooks/useLiveState';
 import { usePermissions } from './hooks/usePermissions';
 import { litersToDisplay, displayToLiters, unitLabel, formatVolume } from './utils/units';
+import {
+  findNozzleByPtsNumber,
+  hadRealDispense,
+  isCapturingPtsId,
+  isReadyProtected,
+} from './utils/nozzleState';
 import { mapPumpConfigToDispenser, mapNameToFuelType, idleNozzle, resolveNozzleNumber } from './utils/pumpMapping';
 
 const PriceConfigTab = lazy(() => import('./components/PriceConfigTab'));
@@ -131,13 +137,8 @@ export default function App() {
       return false;
     }
 
-    // Ready = Idle + manguera levantada: emparejar por número de manguera físico.
-    if (rawStatus === 'PumpIdleStatus') {
-      return activeNozzleNumber > 0 && activeNozzleNumber === nozzleNumber;
-    }
-
-    // Restore original nozzle ID matching behavior for Pumps 2 and 4
-    if (pumpData.pump === 2 || pumpData.pump === 4) {
+    // Preferir empareje por número físico de manguera (todas las caras).
+    if (activeNozzleNumber > 0) {
       return activeNozzleNumber === nozzleNumber;
     }
 
@@ -152,7 +153,7 @@ export default function App() {
       if (grade.includes('kerosene') && type.includes('kerosene')) return true;
     }
 
-    return activeNozzleNumber === nozzleNumber;
+    return false;
   };
 
   // Navigation Tabs
@@ -290,6 +291,27 @@ export default function App() {
   /** Auth local pendiente: solo se envía al PTS cuando la manguera está levantada. */
   const pendingPtsAuthRef = useRef<Map<number, PendingPtsAuth>>(new Map());
   const ptsAuthInFlightRef = useRef<Set<number>>(new Set());
+  /** Auth ya programada (evita autoFree entre delete pending y sendPtsAuthorize). */
+  const ptsAuthScheduledRef = useRef<Set<number>>(new Set());
+  /** Evita re-autorizar / autoFree justo después de auth o capture. */
+  const authCooldownUntilRef = useRef<Map<number, number>>(new Map());
+
+  const armAuthCooldown = (pumpId: number, ms = 4000) => {
+    authCooldownUntilRef.current.set(pumpId, Date.now() + ms);
+  };
+
+  const isAuthCoolingDown = (pumpId: number): boolean => {
+    const until = authCooldownUntilRef.current.get(pumpId) || 0;
+    return Date.now() < until;
+  };
+
+  const refreshPendingFromDb = () => {
+    api.getPendingTransactions().then(pRes => {
+      if (pRes.ok && Array.isArray(pRes.data)) {
+        applyPendingFromDb(pRes.data as any[]);
+      }
+    });
+  };
 
   const hasPumpMapping = (pumpId: number): boolean => {
     const d = dispensersRef.current.find((x) => x.id === pumpId);
@@ -305,12 +327,15 @@ export default function App() {
       console.warn(`[auth] Bloqueado: nozzle inválido para cara ${pumpId}`);
       return false;
     }
-    if (ptsAuthInFlightRef.current.has(pumpId)) return false;
+    if (ptsAuthInFlightRef.current.has(pumpId) || isAuthCoolingDown(pumpId)) return false;
     ptsAuthInFlightRef.current.add(pumpId);
     try {
       if (auth.mode === 'full' || auth.mode === 'free') {
         const res = await api.postpayAuthorizePump(pumpId, auth.nozzle, auth.shiftId);
-        if (res.ok) pendingPtsAuthRef.current.delete(pumpId);
+        if (res.ok) {
+          pendingPtsAuthRef.current.delete(pumpId);
+          armAuthCooldown(pumpId);
+        }
         return !!res.ok;
       }
       const res = await api.authorizePump(
@@ -320,7 +345,10 @@ export default function App() {
         auth.dose,
         auth.shiftId,
       );
-      if (res.ok) pendingPtsAuthRef.current.delete(pumpId);
+      if (res.ok) {
+        pendingPtsAuthRef.current.delete(pumpId);
+        armAuthCooldown(pumpId);
+      }
       return !!res.ok;
     } finally {
       setTimeout(() => ptsAuthInFlightRef.current.delete(pumpId), 2500);
@@ -393,6 +421,10 @@ export default function App() {
         const matches = dbPending.filter((pt: any) => {
           const pumpId = Number(pt.pumpId ?? pt.pump_id);
           if (pumpId !== d.id) return false;
+          const vol = Number(pt.volume || 0);
+          const amt = Number(pt.amount || 0);
+          // No mostrar ni restaurar ventas en $0.00 / 0 litros
+          if (!(vol > 0 && amt > 0)) return false;
           const mappedFuel = mapNameToFuelType(String(pt.fuelType || pt.fuel_type || ''));
           return mappedFuel === n.fuelType || pt.fuelType === n.fuelType;
         });
@@ -492,7 +524,9 @@ export default function App() {
     if (!shiftId) return;
     api.getShiftTransactions(shiftId).then(tRes => {
       if (tRes.ok && Array.isArray(tRes.data)) {
-        const normalized = (tRes.data as any[]).map(normalizeBackendTransaction);
+        const normalized = (tRes.data as any[])
+          .map(normalizeBackendTransaction)
+          .filter((tx) => tx.volume > 0 && tx.amount > 0);
         const uniqueTx = normalized.filter((tx, index, self) =>
           self.findIndex(t => t.id === tx.id) === index
         );
@@ -601,9 +635,11 @@ export default function App() {
           (pts2Status === 'Ready' || pts2Status === 'Idle') &&
           pumpConfigLoadedRef.current &&
           hasPumpMapping(dispenser.id) &&
-          !ptsAuthInFlightRef.current.has(dispenser.id)
+          !ptsAuthInFlightRef.current.has(dispenser.id) &&
+          !ptsAuthScheduledRef.current.has(dispenser.id) &&
+          !isAuthCoolingDown(dispenser.id)
         ) {
-          const liftedNozzle = dispenser.nozzles[liftedNozzleNumber - 1];
+          const liftedNozzle = findNozzleByPtsNumber(dispenser.nozzles, liftedNozzleNumber);
           const pending = pendingPtsAuthRef.current.get(dispenser.id);
           const pendingMatches =
             pending &&
@@ -630,11 +666,13 @@ export default function App() {
                   shiftId: shiftDetails.shiftId,
                 };
             const pumpIdToAuth = dispenser.id;
+            // Reservar ANTES de borrar pending — evita ventana donde autoFree dispara otra auth
+            ptsAuthScheduledRef.current.add(pumpIdToAuth);
             pendingPtsAuthRef.current.delete(pumpIdToAuth);
             setTimeout(() => {
+              ptsAuthScheduledRef.current.delete(pumpIdToAuth);
               void sendPtsAuthorize(pumpIdToAuth, auth).then((ok) => {
                 if (!ok && pendingMatches) {
-                  // Reencolar si falló (mapeo/PTS) para reintentar al siguiente poll
                   pendingPtsAuthRef.current.set(pumpIdToAuth, auth);
                 }
               });
@@ -645,7 +683,7 @@ export default function App() {
         return {
           ...dispenser,
           nozzles: dispenser.nozzles.map((nozzle, nozzleIdx) => {
-            // Determine if this nozzle is the active one from PTS-2
+            // Número PTS 1-based = posición en el mapeo de la cara
             const thisNozzleNumber = nozzleIdx + 1;
             const isActiveNozzle = checkIsActiveNozzle(nozzle.fuelType, thisNozzleNumber, pumpData);
 
@@ -665,7 +703,7 @@ export default function App() {
                 ?? Number(pumpData.price || 0)
                 ?? 0;
               const vol = resolveLiveDispenseVolume(pumpData, nozzle, fuelPrice);
-              const amt = pumpData.amount ?? nozzle.currentAmount;
+              const amt = Number(pumpData.amount ?? nozzle.currentAmount ?? 0);
               const limit = nozzle.limitAmount;
               const progress = limit && limit > 0
                 ? Math.min(100, Math.round((amt / limit) * 100))
@@ -682,14 +720,8 @@ export default function App() {
 
             // 2) Manguera levantada en Idle → Ready
             if (pts2Status === 'Ready' && isActiveNozzle) {
-              // No pisar fin de despacho / cobro pendiente con Ready
-              // (algunos firmware dejan Nozzle>0 un instante tras colgar).
-              if (
-                nozzle.status === 'Blocked' ||
-                nozzle.status === 'Prepaid' ||
-                nozzle.status === 'Unpaid' ||
-                nozzle.status === 'EndOfTransaction'
-              ) {
+              // No pisar fin de despacho / auth / cobro / captura en curso
+              if (isReadyProtected(nozzle.status) || isCapturingPtsId(nozzle.ptsTransactionId)) {
                 return nozzle;
               }
               return {
@@ -717,13 +749,14 @@ export default function App() {
               const derivedLive = resolveLiveDispenseVolume(pumpData, nozzle, fuelPrice);
               const liveVol = Math.max(Number(nozzle.currentVolume || 0), derivedLive);
               const liveAmt = Number(nozzle.currentAmount || pumpData.amount || 0);
-              const wasDispensing = nozzle.status === 'Dispensing';
-              const hadRealFill = wasDispensing || liveVol > 0 || liveAmt > 0;
+              // Solo vol/monto > 0 cuenta como despacho real (no un Filling vacío)
+              const hadRealFill = hadRealDispense(liveVol, liveAmt);
 
               // Solo levantó y bajó manguera → no capturar venta fantasma
               if (!hadRealFill && !nozzle.ptsTransactionId) {
                 const pumpIdHang = dispenser.id;
                 setTimeout(() => { api.closeTransaction(pumpIdHang); }, 10);
+                pendingPtsAuthRef.current.delete(pumpIdHang);
                 return {
                   ...nozzle,
                   status: 'Idle',
@@ -744,10 +777,9 @@ export default function App() {
                     fuelPrice,
                   );
               const lastAmt = liveAmt > 0 ? liveAmt : Number(pumpData.last_amount ?? pumpData.amount ?? 0);
-              const isPrep = nozzle.status === 'Prepaid' || (!!nozzle.limitAmount && !nozzle.isPostpaid);
 
               // Estado 4: fin de despacho con manguera aún levantada.
-              // Captura una sola vez; la UI permanece en EndOfTransaction hasta colgar.
+              // Captura una sola vez; UI permanece en EndOfTransaction hasta colgar.
               if (!nozzle.ptsTransactionId) {
                 const pumpIdCapture = dispenser.id;
                 const nozzleFuelType = nozzle.fuelType;
@@ -755,8 +787,9 @@ export default function App() {
                 setTimeout(async () => {
                   const captureRes = await api.capturePendingTransaction(pumpIdCapture);
                   const skipped = !!(captureRes.ok && (captureRes.data as any)?.skipped);
-                  if (skipped) {
+                  if (skipped || !captureRes.ok) {
                     api.closeTransaction(pumpIdCapture);
+                    armAuthCooldown(pumpIdCapture);
                     setDispensers(prev => prev.map(d => d.id === pumpIdCapture ? {
                       ...d,
                       nozzles: d.nozzles.map(n => n.fuelType === nozzleFuelType ? {
@@ -773,20 +806,14 @@ export default function App() {
                     return;
                   }
 
-                  const realTrxId = captureRes.ok && captureRes.data
-                    ? String((captureRes.data as any).trx_id || (captureRes.data as any).id)
-                    : `TRX-${pumpIdCapture}-${Date.now()}`;
-                  const capVol = captureRes.ok && captureRes.data
-                    ? Number((captureRes.data as any).volume ?? lastVol)
-                    : lastVol;
-                  const capAmt = captureRes.ok && captureRes.data
-                    ? Number((captureRes.data as any).amount ?? lastAmt)
-                    : lastAmt;
+                  const realTrxId = String((captureRes.data as any).trx_id || (captureRes.data as any).id || '');
+                  const capVol = Number((captureRes.data as any).volume ?? lastVol);
+                  const capAmt = Number((captureRes.data as any).amount ?? lastAmt);
 
-                  // Cierra en PTS-2 sin esperar el cobro
                   api.closeTransaction(pumpIdCapture);
+                  armAuthCooldown(pumpIdCapture);
 
-                  if (capVol <= 0 && capAmt <= 0) {
+                  if (!realTrxId || (!hadRealDispense(capVol, capAmt))) {
                     setDispensers(prev => prev.map(d => d.id === pumpIdCapture ? {
                       ...d,
                       nozzles: d.nozzles.map(n => n.fuelType === nozzleFuelType ? {
@@ -801,45 +828,20 @@ export default function App() {
                     return;
                   }
 
+                  // Solo refrescar cola desde BD (venta automática del PTS) — no inventar TRX local
                   setDispensers(prev => prev.map(d => d.id === pumpIdCapture ? {
                     ...d,
                     nozzles: d.nozzles.map(n => n.fuelType === nozzleFuelType ? {
                       ...n,
+                      status: 'EndOfTransaction' as PumpStatus,
                       ptsTransactionId: realTrxId,
                       currentVolume: capVol,
                       currentAmount: capAmt,
+                      progressPercent: 100,
                     } : n),
                   } : d));
-
-                  if (isPrep) {
-                    completeFuelingJob(pumpIdCapture, capVol, capAmt, nozzleFuelType, 'Cash', realTrxId);
-
-                    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                    setAlerts(prev => [{
-                      id: `AL-PAID-${Math.random()}`,
-                      dateTime: `Hoy ${timeStr}`,
-                      pumpName: `Cara ${pumpIdCapture}`,
-                      volume: formatVolume(capVol, unitMeasure),
-                      amount: `$${capAmt.toFixed(2)}`,
-                      paymentType: 'Cash',
-                      message: `✓ Prepago completado: $${capAmt.toFixed(2)} — Cara ${pumpIdCapture} (${nozzleFuelType}) — Trx ${realTrxId}`,
-                      isCustomNote: true,
-                    }, ...prev]);
-                  }
+                  refreshPendingFromDb();
                 }, 50);
-
-                if (isPrep) {
-                  return {
-                    ...nozzle,
-                    status: 'Idle',
-                    currentVolume: 0.0,
-                    currentAmount: 0.0,
-                    progressPercent: 0,
-                    limitAmount: undefined,
-                    isPostpaid: false,
-                    ptsTransactionId: '__capturing__',
-                  };
-                }
 
                 return {
                   ...nozzle,
@@ -852,12 +854,17 @@ export default function App() {
               }
 
               // Ya capturando/capturado: mantener totales en EndOfTransaction
-              if (nozzle.status === 'EndOfTransaction' || nozzle.status === 'Dispensing' || nozzle.status === 'Unpaid') {
+              if (
+                nozzle.status === 'EndOfTransaction' ||
+                nozzle.status === 'Dispensing' ||
+                nozzle.status === 'Unpaid' ||
+                isCapturingPtsId(nozzle.ptsTransactionId)
+              ) {
                 return {
                   ...nozzle,
                   status: 'EndOfTransaction',
-                  currentVolume: lastVol,
-                  currentAmount: lastAmt,
+                  currentVolume: Math.max(lastVol, Number(nozzle.currentVolume || 0)),
+                  currentAmount: Math.max(lastAmt, Number(nozzle.currentAmount || 0)),
                   progressPercent: 100,
                 };
               }
@@ -866,7 +873,7 @@ export default function App() {
 
             if (pts2Status === 'Authorized' && isActiveNozzle) {
               // Confirmed authorized by PTS-2 — keep as Prepaid in UI
-              if (nozzle.status !== 'Prepaid') {
+              if (nozzle.status !== 'Prepaid' && nozzle.status !== 'Authorized') {
                 return { ...nozzle, status: 'Prepaid' };
               }
             }
@@ -876,20 +883,20 @@ export default function App() {
             }
 
             // Estado 5: manguera COLGADA (Idle + Nozzle/NozzleUp = 0).
-            // isActiveNozzle es false para todas, así que se limpia por estado local.
             const nozzleHung = pts2Status === 'Idle' && liftedNozzleNumber <= 0;
 
             if (nozzleHung) {
-              // Tras fin de despacho / cobro pendiente → cola de cobro
+              // Tras fin de despacho → Idle + cola de cobro desde BD (sin inventar venta)
               if (nozzle.status === 'Unpaid' || nozzle.status === 'EndOfTransaction') {
                 const vol = Number(nozzle.currentVolume || 0);
                 const amt = Number(nozzle.currentAmount || 0);
 
-                // Capture aún en curso: si no hay despacho real, cerrar sin venta.
-                if (!nozzle.ptsTransactionId || nozzle.ptsTransactionId === '__capturing__') {
-                  if (vol <= 0 && amt <= 0) {
+                if (!nozzle.ptsTransactionId || isCapturingPtsId(nozzle.ptsTransactionId)) {
+                  if (!hadRealDispense(vol, amt)) {
                     const pumpIdHang = dispenser.id;
                     setTimeout(() => { api.closeTransaction(pumpIdHang); }, 10);
+                    pendingPtsAuthRef.current.delete(pumpIdHang);
+                    armAuthCooldown(pumpIdHang);
                     return {
                       ...nozzle,
                       status: 'Idle',
@@ -901,7 +908,7 @@ export default function App() {
                       ptsTransactionId: undefined,
                     };
                   }
-                  // Mantener EOT hasta tener trx_id real (el capture async lo setea)
+                  // Mantener EOT hasta tener trx_id real
                   return {
                     ...nozzle,
                     status: 'EndOfTransaction',
@@ -911,10 +918,10 @@ export default function App() {
                   };
                 }
 
-                const trxId = nozzle.ptsTransactionId;
-                const fuel = nozzle.fuelType;
+                const pumpIdHang = dispenser.id;
                 setTimeout(() => {
-                  completeFuelingJob(dispenser.id, vol, amt, fuel, undefined, trxId);
+                  refreshPendingFromDb();
+                  armAuthCooldown(pumpIdHang);
                 }, 10);
 
                 return {
@@ -929,13 +936,15 @@ export default function App() {
                 };
               }
 
-              // Levantó y colgó sin despacho (Ready / Authorized) → volver a reposo
+              // Levantó/autorizó y colgó sin despacho → reposo (incluye Prepaid)
               if (
                 nozzle.status === 'Ready' ||
                 nozzle.status === 'Authorized' ||
-                nozzle.status === 'Dispensing'
+                nozzle.status === 'Dispensing' ||
+                nozzle.status === 'Prepaid'
               ) {
                 pendingPtsAuthRef.current.delete(dispenser.id);
+                armAuthCooldown(dispenser.id);
                 return {
                   ...nozzle,
                   status: 'Idle',
@@ -1742,7 +1751,7 @@ export default function App() {
     setAlerts(prev => [alertNote, ...prev]);
   };
 
-  // Collect Postpaid Payment
+  // Collect Postpaid Payment — también desde EndOfTransaction (Unpaid no se usa en path PTS)
   const handleCollectPayment = (
     dispenserId: number,
     fuelType: FuelType,
@@ -1757,11 +1766,14 @@ export default function App() {
         return {
           ...d,
           nozzles: d.nozzles.map(n => {
-            if (n.fuelType === fuelType && n.status === 'Unpaid') {
+            const collectable =
+              n.fuelType === fuelType &&
+              (n.status === 'Unpaid' || n.status === 'EndOfTransaction') &&
+              hadRealDispense(n.currentVolume, n.currentAmount);
+            if (collectable) {
               collectedAmount = n.currentAmount;
               collectedVolume = n.currentVolume;
-              // Recoge el ID real capturado en EndOfTransaction
-              capturedTrxId = n.ptsTransactionId && n.ptsTransactionId !== '__capturing__'
+              capturedTrxId = n.ptsTransactionId && !isCapturingPtsId(n.ptsTransactionId)
                 ? n.ptsTransactionId : undefined;
               return {
                 ...n,
@@ -1780,15 +1792,15 @@ export default function App() {
       return d;
     }));
 
-    // Register transaction with chosen payment method
-    if (collectedAmount > 0) {
-      // Usa el ID real del PTS-2 si está disponible (gap 3 — evita duplicados con WebSocket)
-      completeFuelingJob(dispenserId, collectedVolume, collectedAmount, fuelType, paymentType, capturedTrxId);
-      // La transacción ya fue cerrada automáticamente al detectar EndOfTransaction (gap 2);
-      // solo cerramos de nuevo si no hubo capture exitoso
+    // Cobro vía cola de pendientes (BD); si hay totales en pantalla sin trx, no inventar
+    if (collectedAmount > 0 || collectedVolume > 0) {
+      if (capturedTrxId) {
+        // La venta ya está (o debería estar) en pending_transactions del PTS
+        refreshPendingFromDb();
+      }
       if (!capturedTrxId) api.closeTransaction(dispenserId);
-      
-      // Extra confirmation alert log
+      armAuthCooldown(dispenserId);
+
       const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const methodLabels = {
         'Cash': 'Efectivo',
@@ -1796,12 +1808,12 @@ export default function App() {
         'Debit Card': 'Tarjeta de Débito',
         'Fleet Card': 'Vale Corporativo / Flotas'
       };
-      
+
       const customAlert: ShiftAlert = {
         id: `AL-PAID-${Math.random()}`,
         dateTime: `Hoy ${timeStr}`,
         pumpName: `Cara ${dispenserId}`,
-        volume: `${collectedVolume.toFixed(3)} Gal`,
+        volume: formatVolume(collectedVolume, unitMeasure),
         amount: `$${collectedAmount.toFixed(2)}`,
         paymentType: paymentType,
         message: `✓ Pago Recibido: Cobro de $${collectedAmount.toFixed(2)} liquidado con ${methodLabels[paymentType]} para la Cara ${dispenserId} (${fuelType}).`,
@@ -3296,14 +3308,7 @@ export default function App() {
     trxId?: string,
     dateTimeStr?: string
   ) => {
-    // No hubo despacho real (manguera levantada y colgada sin surtir combustible):
-    // no crear una "venta" fantasma de $0.00 / 0 litros.
-    if (volume <= 0 && amount <= 0) {
-      console.log(`[completeFuelingJob] Ignorado: sin despacho real (volume=0, amount=0) — pump=${dispenserId}, fuel=${fuelType}`);
-      return;
-    }
-
-    // Si el PTS solo reportó monto, estimar litraje con precio del producto
+    // Derivar litraje si el PTS solo mandó monto, luego exigir ambos > 0
     let resolvedVolume = volume;
     if (!(resolvedVolume > 0) && amount > 0) {
       const unitPrice = prices.find(p => p.fuelType === fuelType)?.price || 0;
@@ -3311,6 +3316,14 @@ export default function App() {
         resolvedVolume = parseFloat((amount / unitPrice).toFixed(3));
       }
     }
+
+    // Nunca crear ventas en $0.00 / 0 litros
+    if (!(resolvedVolume > 0 && amount > 0)) {
+      console.log(`[completeFuelingJob] Ignorado: venta cero (volume=${resolvedVolume}, amount=${amount}) — pump=${dispenserId}, fuel=${fuelType}`);
+      return;
+    }
+
+    volume = resolvedVolume;
 
     const completionKey = `${dispenserId}:${fuelType}`;
     if (!trxId && completingNozzlesRef.current.has(completionKey)) {

@@ -116,6 +116,12 @@ def upsert_pending_transaction(
     station_code: str | None = None,
     pos_terminal_code: str | None = None,
 ) -> tuple[PendingTransaction, bool]:
+    from .volume_utils import is_zero_sale
+
+    # Última línea de defensa: nunca persistir ventas en $0.00 / 0 L
+    if is_zero_sale(volume, amount):
+        raise ValueError("zero_sale_rejected")
+
     existing = db.query(PendingTransaction).filter(PendingTransaction.trx_id == trx_id).first()
     if existing:
         if raw_payload and not existing.raw_payload:

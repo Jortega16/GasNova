@@ -510,11 +510,11 @@ export default function CaraCard({
                         <StopCircle className="w-3.5 h-3.5" />
                       </button>
                     )}
-                    {isNozzleUnpaid && (
+                    {(isNozzleUnpaid || isNozzleEot) && (
                       <button
                         onClick={() => { if (onPressNozzle) onPressNozzle(dispenser.id, nozzle.fuelType); }}
                         className="w-7 h-7 rounded-lg bg-rose-600/40 hover:bg-rose-500/60 text-rose-200 flex items-center justify-center cursor-pointer animate-bounce border border-rose-500/30"
-                        title="Cobrar transacción"
+                        title="Cobrar / ver despacho"
                       >
                         <DollarSign className="w-3.5 h-3.5" />
                       </button>
@@ -528,7 +528,7 @@ export default function CaraCard({
                         <RefreshCw className="w-3.5 h-3.5" />
                       </button>
                     )}
-                    {hasPending && !isNozzleDisp && !isNozzlePrep && !isNozzleUnpaid && !isNozzleBlock && (
+                    {hasPending && !isNozzleDisp && !isNozzlePrep && !isNozzleUnpaid && !isNozzleEot && !isNozzleBlock && (
                       <button
                         onClick={() => { if (onPressNozzle) onPressNozzle(dispenser.id, nozzle.fuelType); }}
                         className="w-7 h-7 rounded-lg bg-rose-900/40 text-rose-400 hover:bg-rose-800/50 flex items-center justify-center cursor-pointer animate-pulse border border-rose-800/30"

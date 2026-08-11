@@ -46,3 +46,8 @@ def resolve_unit_price(data: dict[str, Any] | None, fallback: float | None = Non
         if p > 0:
             return p
     return fallback if fallback and fallback > 0 else None
+
+
+def is_zero_sale(volume: Any, amount: Any) -> bool:
+    """True si no hay venta real — requiere monto y volumen > 0 (nunca $0.00)."""
+    return coerce_float(volume) <= 0 or coerce_float(amount) <= 0
