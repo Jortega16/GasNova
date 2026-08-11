@@ -529,7 +529,7 @@ export default function OtherTabs({
         throw new Error('El PTS-2 no devolvió caras válidas');
       }
 
-      // Persistir reemplazo completo en BD (elimina caras obsoletas)
+      // Persistir: elimina mapeo anterior y guarda solo el importado
       const replaceRes = await api.replaceLocalPumpsConfiguration(
         newDispensers.map((d) => ({
           pumpId: d.id,
@@ -543,14 +543,20 @@ export default function OtherTabs({
       }
 
       if (syncGen !== mappingLoadGenRef.current) return;
-      // Preferir lo que quedó persistido en BD (fuente de verdad)
-      const fromDb = Array.isArray(replaceRes.data) && replaceRes.data.length > 0
-        ? (replaceRes.data as any[]).map(mapPumpConfigToDispenser)
-        : newDispensers;
+
+      // Releer BD para confirmar persistencia (fuente de verdad)
+      const verify = await api.getPumpsConfiguration();
+      const fromDb = (verify.ok && Array.isArray(verify.data) && verify.data.length > 0)
+        ? (verify.data as any[]).map(mapPumpConfigToDispenser)
+        : (Array.isArray(replaceRes.data) && replaceRes.data.length > 0
+          ? (replaceRes.data as any[]).map(mapPumpConfigToDispenser)
+          : newDispensers);
+
+      // Reemplazo total en UI (no merge con caras viejas)
       setDispensers(fromDb);
 
       setPts2SyncResult('ok');
-      setTimeout(() => setPts2SyncResult(null), 4000);
+      setTimeout(() => setPts2SyncResult(null), 5000);
     } catch (e) {
       console.error('Sync PTS-2 error:', e);
       setPts2SyncResult('error');
@@ -2427,7 +2433,7 @@ export default function OtherTabs({
                 Administración de Caras y Mapeo de Combustibles
               </h3>
               <p className="text-xs text-slate-500 mt-1">
-                Añada nuevos dispensadores, elimine equipos retirados de pista o asigne (mapee) dinámicamente qué mangueras de combustible están instaladas de forma física en cada cara.
+                Importe el mapeo del PTS-2 (reemplaza y borra el anterior), edite mangueras por cara o cree una cara nueva. Todo queda persistido en BD.
               </p>
             </div>
 
@@ -2444,21 +2450,21 @@ export default function OtherTabs({
                     <div className="flex items-center gap-1.5">
                       {pts2SyncResult === 'ok' && (
                         <span className="text-emerald-700 text-[10px] font-bold flex items-center gap-1">
-                          <Check className="w-3 h-3" /> Mapeo actualizado — ya puede editarlo
+                          <Check className="w-3 h-3" /> Mapeo anterior reemplazado y guardado
                         </span>
                       )}
                       {pts2SyncResult === 'error' && (
-                        <span className="text-red-600 text-[10px] font-bold">Error al recuperar del PTS-2</span>
+                        <span className="text-red-600 text-[10px] font-bold">Error al importar/reemplazar mapeo</span>
                       )}
                       <button
                         type="button"
                         onClick={handleSyncFromPts2}
                         disabled={pts2Syncing}
                         className="bg-[#1b365d] hover:bg-[#2a4f8f] disabled:opacity-60 text-white font-sans font-bold text-xs py-1.5 px-3 rounded flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
-                        title="Leer configuración actual del controlador PTS-2 y mapearla aquí"
+                        title="Borra el mapeo local anterior, importa el del PTS-2 y lo persiste en BD"
                       >
                         <Download className={`w-3.5 h-3.5 ${pts2Syncing ? 'animate-bounce' : ''}`} />
-                        <span>{pts2Syncing ? 'Leyendo PTS-2...' : 'Recuperar desde PTS-2'}</span>
+                        <span>{pts2Syncing ? 'Importando mapeo...' : 'Recuperar desde PTS-2'}</span>
                       </button>
                     </div>
                     {onOpenWizard && (

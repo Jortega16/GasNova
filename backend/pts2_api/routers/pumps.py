@@ -806,12 +806,15 @@ def save_local_pump_configuration(
 
     existing = db.query(PumpConfiguration).filter(PumpConfiguration.pump_id == request.pumpId).first()
     if existing:
+        from sqlalchemy.orm.attributes import flag_modified
         existing.pump_name = request.name
         existing.nozzles_count = nozzles_count
         if nozzles_payload is not None:
             existing.nozzles_json = nozzles_payload
+            flag_modified(existing, "nozzles_json")
         elif not existing.nozzles_json:
             existing.nozzles_json = _default_nozzles(nozzles_count)
+            flag_modified(existing, "nozzles_json")
     else:
         existing = PumpConfiguration(
             pump_id=request.pumpId,
@@ -835,18 +838,23 @@ class LocalPumpsReplaceRequest(BaseModel):
     response_model=CommandResponse,
     summary="Reemplazar todo el mapeo local de caras",
     description=(
-        "Sustituye la configuración local de caras/mangueras por la lista enviada "
-        "(típico tras 'Recuperar desde PTS-2'). Elimina caras que ya no estén en la lista."
+        "Elimina el mapeo local anterior y persiste únicamente el nuevo "
+        "(típico tras 'Recuperar desde PTS-2' o importar configuración)."
     ),
 )
 def replace_local_pumps_configuration(
     request: LocalPumpsReplaceRequest,
     db: Session = Depends(get_db),
 ) -> CommandResponse:
-    """Reemplaza de forma atómica el mapeo local de bombas."""
-    keep_ids: set[int] = set()
+    """Borra el mapeo previo y guarda solo el importado (reemplazo atómico)."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    # 1) Quitar mapeo anterior por completo
+    db.query(PumpConfiguration).delete(synchronize_session=False)
+    db.flush()
+
+    # 2) Persistir solo el nuevo mapeo
     for item in request.pumps:
-        nozzles_payload = None
         if item.nozzles is not None:
             nozzles_payload = _normalize_nozzles(
                 [n.model_dump(by_alias=False) for n in item.nozzles],
@@ -854,39 +862,19 @@ def replace_local_pumps_configuration(
             )
             nozzles_count = len(nozzles_payload)
         else:
+            nozzles_payload = _default_nozzles(item.nozzlesCount)
             nozzles_count = item.nozzlesCount
 
-        existing = (
-            db.query(PumpConfiguration)
-            .filter(PumpConfiguration.pump_id == item.pumpId)
-            .first()
+        row = PumpConfiguration(
+            pump_id=item.pumpId,
+            pump_name=item.name,
+            nozzles_count=nozzles_count,
+            status="active",
+            nozzles_json=nozzles_payload,
         )
-        if existing:
-            existing.pump_name = item.name
-            existing.nozzles_count = nozzles_count
-            existing.status = "active"
-            if nozzles_payload is not None:
-                existing.nozzles_json = nozzles_payload
-            elif not existing.nozzles_json:
-                existing.nozzles_json = _default_nozzles(nozzles_count)
-        else:
-            db.add(
-                PumpConfiguration(
-                    pump_id=item.pumpId,
-                    pump_name=item.name,
-                    nozzles_count=nozzles_count,
-                    status="active",
-                    nozzles_json=nozzles_payload or _default_nozzles(nozzles_count),
-                )
-            )
-        keep_ids.add(item.pumpId)
-
-    if keep_ids:
-        db.query(PumpConfiguration).filter(
-            ~PumpConfiguration.pump_id.in_(keep_ids)
-        ).delete(synchronize_session=False)
-    else:
-        db.query(PumpConfiguration).delete(synchronize_session=False)
+        db.add(row)
+        # Asegura que SQLAlchemy persista el JSON aunque el motor sea exigente
+        flag_modified(row, "nozzles_json")
 
     db.commit()
     configs = db.query(PumpConfiguration).order_by(PumpConfiguration.pump_id).all()
