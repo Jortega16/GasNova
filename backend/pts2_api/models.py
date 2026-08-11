@@ -166,6 +166,11 @@ class Shift(Base):
     start_time = Column(String(100), nullable=True)
     end_time = Column(String(100), nullable=True)
     status = Column(String(50), default="Active", nullable=False)
+    opening_counters = Column(
+        JSON,
+        nullable=True,
+        comment="Snapshot PumpGetTotals por cara al abrir el turno [{pump_id, volume, amount, ...}]",
+    )
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 

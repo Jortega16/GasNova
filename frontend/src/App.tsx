@@ -178,6 +178,12 @@ export default function App() {
   const [selectedNozzleForTrx, setSelectedNozzleForTrx] = useState<{ dispenserId: number; fuelType: FuelType } | null>(null);
   const completingNozzlesRef = useRef<Set<string>>(new Set());
   const autoAuthorizingRef = useRef<Set<number>>(new Set()); // pump ids con auto-autorización en curso
+  // Evita que executeShiftClosureFinal se dispare dos veces en paralelo: al
+  // bloquear las caras (paso 1) cambia `dispensers`, y el watcher de abajo
+  // que espera a que terminen los despachos también depende de `dispensers`
+  // — sin este guard, ese cambio lo vuelve a disparar mientras el primer
+  // intento de cierre todavía está esperando la respuesta del backend.
+  const shiftClosingInFlightRef = useRef<boolean>(false);
 
   // Shift metadata state
   const [shiftDetails, setShiftDetails] = useState<ShiftDetails>(() => {
@@ -688,6 +694,8 @@ export default function App() {
   const [pendingMeters, setPendingMeters] = useState<{ [key: string]: string } | null>(null);
   const [pendingMechCounters, setPendingMechCounters] = useState<Record<number, { vol: number; amt: number }>>({});
   const [showShiftReceipt, setShowShiftReceipt] = useState<boolean>(false);
+  const [receiptShiftDetails, setReceiptShiftDetails] = useState<ShiftDetails | null>(null);
+  const [receiptTransactions, setReceiptTransactions] = useState<Transaction[]>([]);
   const [showShiftCloseConfirm, setShowShiftCloseConfirm] = useState<boolean>(false);
   const [shiftCloseError, setShiftCloseError] = useState<string | null>(null);
   const [showPumpCounters, setShowPumpCounters] = useState<boolean>(false);
@@ -2341,13 +2349,38 @@ export default function App() {
       if (res.ok && res.data) {
         const active = res.data.find((s: any) => s.status === 'Active');
         if (active) {
+          const opening = Array.isArray(active.opening_counters)
+            ? active.opening_counters.map((row: any) => ({
+                pump_id: Number(row.pump_id),
+                pump_name: row.pump_name,
+                volume: Number(row.volume || 0),
+                amount: Number(row.amount || 0),
+              }))
+            : undefined;
           setShiftDetails({
             shiftId: active.shift_id,
             operatorName: active.operator_name,
             startTime: active.start_time || 'N/A',
             endTime: '',
-            status: 'Active'
+            status: 'Active',
+            openingCounters: opening,
           });
+
+          if (!opening || opening.length === 0) {
+            api.captureShiftOpeningCounters(active.shift_id).then(cap => {
+              if (cap.ok && cap.data?.opening_counters) {
+                setShiftDetails(prev => ({
+                  ...prev,
+                  openingCounters: (cap.data!.opening_counters as any[]).map((row: any) => ({
+                    pump_id: Number(row.pump_id),
+                    pump_name: row.pump_name,
+                    volume: Number(row.volume || 0),
+                    amount: Number(row.amount || 0),
+                  })),
+                }));
+              }
+            });
+          }
 
           // Cargar las transacciones del turno activo desde la base de datos
           api.getShiftTransactions(active.shift_id).then(tRes => {
@@ -2358,7 +2391,6 @@ export default function App() {
               );
               setTransactions(uniqueTx);
             } else {
-              // Si falla o está vacío, iniciar con un arreglo vacío
               setTransactions([]);
             }
           });
@@ -2514,6 +2546,16 @@ export default function App() {
   };
 
   const executeShiftClosureFinal = async (meters: { [key: string]: string }, mechCounters: Record<number, { vol: number; amt: number }> = {}) => {
+    // Guard de reentrancia (ver comentario en la declaración del ref) + ya
+    // no estamos "esperando mangueras" — a partir de aquí se intenta el
+    // cierre en firme, así que se limpia isShiftClosing de inmediato en vez
+    // de al final: si se dejara para el final, bloquear las caras (paso 1,
+    // abajo) cambia `dispensers` mientras isShiftClosing sigue en true, y el
+    // watcher que espera despachos volvería a llamar a esta función.
+    if (shiftClosingInFlightRef.current) return;
+    shiftClosingInFlightRef.current = true;
+    setIsShiftClosing(false);
+
     // Snapshot del estado actual ANTES de tocar nada — si el cierre falla en
     // el backend, se restaura tal cual para no dejar el POS en un estado
     // optimista que nunca ocurrió de verdad.
@@ -2544,19 +2586,14 @@ export default function App() {
       nozzles: d.nozzles.map(n => ({ ...n, status: 'Blocked', pendingTransactions: [] })),
     })));
 
-    // 2. Liquida los despachos pendientes conocidos localmente y ESPERA a que
-    // terminen — el backend rechaza el cierre si todavía hay pendientes sin
-    // cobrar, así que mandar el cierre antes de que esto termine es una
-    // condición de carrera real (a veces cierra, a veces no).
-    if (expiredTransactions.length > 0) {
-      await Promise.all(expiredTransactions.map(tx =>
-        processPendingTransactionInBackend(tx.pumpId, tx.id, tx.fuelType, tx.volume, tx.amount, tx.paymentType, 'Bajada')
-      ));
-    }
+    // 2. Si aún hay pendientes locales, NO liquidar a ciegas como Cash:
+    // el modal ya bloquea el cierre. Si llegaron aquí por carrera, el backend
+    // responderá 409 y se restaurará el estado.
+    const pendingLocalCount = expiredTransactions.length;
 
-    // Calculate totals for physical print closure receipt (combining regular and expired transactions)
+    // Calculate totals for physical print closure receipt
     const endTimeStr = new Date().toLocaleString();
-    const allShiftTransactions = [...expiredTransactions, ...transactions];
+    const allShiftTransactions = [...transactions];
     const regularSales = allShiftTransactions.filter(t => t.fuelType === 'Regular Unleaded');
     const premiumSales = allShiftTransactions.filter(t => t.fuelType === 'Premium Unleaded');
     const dieselSales = allShiftTransactions.filter(t => t.fuelType === 'Diesel');
@@ -2588,21 +2625,26 @@ export default function App() {
       pump_id:        d.id,
       pump_name:      d.name,
       system_volume:  allShiftTransactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.volume, 0),
+      system_amount:  allShiftTransactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.amount, 0),
+      closing_volume: mechCounters[d.id]?.vol ?? 0,
+      closing_amount: mechCounters[d.id]?.amt ?? 0,
       mech_volume:    mechCounters[d.id]?.vol ?? 0,
       mech_amount:    mechCounters[d.id]?.amt ?? 0,
       dispatch_count: allShiftTransactions.filter(t => t.pumpId === d.id).length,
     }));
 
-    // 3. El cierre real — se espera la respuesta y se revisa res.ok antes de
-    // dar por hecho que pasó nada. Antes esto no se revisaba: el POS mostraba
-    // "Cierre Exitoso" y el recibo aunque el backend hubiera rechazado el
-    // cierre (turno pendiente sin cobrar, sin turno activo, etc.), dejando el
-    // turno realmente abierto en el backend mientras la pantalla decía otra cosa.
-    const res = await api.closeShift(shiftDetails.shiftId, shiftDetails.operatorName, endTimeStr, counterBreakdown);
+    if (pendingLocalCount > 0) {
+      setDispensers(dispensersSnapshot);
+      setShiftCloseError(`Hay ${pendingLocalCount} venta(s) pendiente(s) de cobro. Cóbrelas antes de cerrar el turno.`);
+      shiftClosingInFlightRef.current = false;
+      return;
+    }
+
+    // 3. Cierre real (SetClosing + validación + contadores en backend)
+    const res = await api.closeShift(shiftDetails.shiftId, shiftDetails.operatorName, endTimeStr, counterBreakdown, true);
 
     if (!res.ok) {
       setDispensers(dispensersSnapshot);
-      setIsShiftClosing(false);
       const message = parseCloseShiftError(res.error);
       setShiftCloseError(message);
 
@@ -2618,21 +2660,52 @@ export default function App() {
         isCustomNote: true
       };
       setAlerts(prev => [failAlert, ...prev]);
+      shiftClosingInFlightRef.current = false;
       return;
     }
 
     setShiftCloseError(null);
 
-    // 4. Éxito confirmado por el backend — ahora sí se aplican los cambios locales.
-    if (expiredTransactions.length > 0) {
-      setTransactions(prev => [...expiredTransactions, ...prev]);
-    }
+    // Preferir desglose enriquecido del backend (delta apertura→cierre)
+    const printedBreakdown = (res.data as any)?.closure?.counter_breakdown || counterBreakdown;
 
-    setShiftDetails(prev => ({
-      ...prev,
+    // Snapshot del turno cerrado para el recibo (antes de activar el nuevo)
+    const closedForReceipt: ShiftDetails = {
+      ...shiftDetails,
       status: 'Closed',
-      endTime: endTimeStr
-    }));
+      endTime: endTimeStr,
+    };
+    setReceiptShiftDetails(closedForReceipt);
+    setReceiptTransactions([...allShiftTransactions]);
+
+    // 4. Éxito — activar turno nuevo en UI (sin esperar recarga)
+    const newShift = (res.data as any)?.new_shift;
+    if (newShift?.shift_id) {
+      const opening = Array.isArray(newShift.opening_counters)
+        ? newShift.opening_counters.map((row: any) => ({
+            pump_id: Number(row.pump_id),
+            pump_name: row.pump_name,
+            volume: Number(row.volume || 0),
+            amount: Number(row.amount || 0),
+          }))
+        : undefined;
+      setShiftDetails({
+        shiftId: newShift.shift_id,
+        operatorName: newShift.operator_name || currentUser?.name || shiftDetails.operatorName,
+        startTime: newShift.start_time || endTimeStr,
+        endTime: '',
+        status: 'Active',
+        openingCounters: opening,
+      });
+      setTransactions([]);
+      setNextShiftData(newShift);
+    } else {
+      setShiftDetails(prev => ({
+        ...prev,
+        status: 'Closed',
+        endTime: endTimeStr,
+      }));
+    }
 
     api.printClosure({
       shift_id:          shiftDetails.shiftId,
@@ -2645,7 +2718,7 @@ export default function App() {
       transaction_count: transactionCount,
       fuel_breakdown:    fuelBreakdown,
       payment_breakdown: paymentBreakdown,
-      counter_breakdown: counterBreakdown,
+      counter_breakdown: printedBreakdown,
     }).catch(err => console.error("Error printing physical closure:", err));
 
     // Desbloquear todas las caras para el turno nuevo
@@ -2662,41 +2735,37 @@ export default function App() {
       })),
     })));
 
-    if (res.data) {
-      setNextShiftData(res.data.new_shift);
-      if (res.data.new_shift) {
-        const nextShiftName = getShiftNameFromId(res.data.new_shift.shift_id, shiftBrackets);
-        api.printNextShift({
-          shift_id:            res.data.new_shift.shift_id,
-          shift_name:          nextShiftName,
-          previous_shift_id:   shiftDetails.shiftId,
-          previous_shift_name: closedShiftName,
-          operator_name:       res.data.new_shift.operator_name,
-          start_time:          res.data.new_shift.start_time
-        }).catch(err => console.error("Error printing physical next shift:", err));
-      }
+    if (newShift?.shift_id) {
+      const nextShiftName = getShiftNameFromId(newShift.shift_id, shiftBrackets);
+      api.printNextShift({
+        shift_id:            newShift.shift_id,
+        shift_name:          nextShiftName,
+        previous_shift_id:   shiftDetails.shiftId,
+        previous_shift_name: closedShiftName,
+        operator_name:       newShift.operator_name,
+        start_time:          newShift.start_time
+      }).catch(err => console.error("Error printing physical next shift:", err));
     }
 
     setIsShiftClosing(false);
 
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const forcedMsg = expiredTransactions.length > 0
-      ? ` y se liquidaron automáticamente ${expiredTransactions.length} despacho(s) pendiente(s) de manguera a caja.`
-      : '.';
-
     const customAlert: ShiftAlert = {
       id: `AL-SH-CLOSED-${Math.random()}`,
       dateTime: `Hoy ${timeStr}`,
       pumpName: `Sistema`,
       volume: '—',
-      amount: expiredTransactions.length > 0 ? `$${expiredTransactions.reduce((sum, tx) => sum + tx.amount, 0).toFixed(2)}` : '—',
+      amount: '—',
       paymentType: 'System',
-      message: `🔒 Cierre de Turno Exitoso: Se han bloqueado todas las caras de despacho de forma automática${forcedMsg}`,
+      message: newShift?.shift_id
+        ? `🔒 Turno cerrado. Nuevo turno activo: ${newShift.shift_id}.`
+        : `🔒 Cierre de Turno Exitoso.`,
       isCustomNote: true
     };
     setAlerts(prev => [customAlert, ...prev]);
 
     setShowShiftReceipt(true);
+    shiftClosingInFlightRef.current = false;
   };
 
   const handleCloseShift = (manualMeters: { [key: string]: string }, mechCounters: Record<number, { vol: number; amt: number }> = {}) => {
@@ -3309,7 +3378,7 @@ export default function App() {
               transactions={transactions}
               alerts={alerts}
               onAddNote={handleAddShiftNote}
-              onCloseShift={handleCloseShift}
+              onCloseShift={() => setShowShiftCloseConfirm(true)}
               isShiftClosing={isShiftClosing}
               activeDispensingCount={currentlyDispensingCount}
               prices={{
@@ -3698,13 +3767,17 @@ export default function App() {
 
       <ShiftReceiptModal
         show={showShiftReceipt}
-        shiftDetails={shiftDetails}
-        transactions={transactions}
+        shiftDetails={receiptShiftDetails || shiftDetails}
+        transactions={receiptTransactions.length > 0 ? receiptTransactions : transactions}
         dispensers={dispensers}
         unitMeasure={unitMeasure}
         currencySymbol={currencySymbol}
         pendingMeters={pendingMeters}
-        onClose={() => setShowShiftReceipt(false)}
+        onClose={() => {
+          setShowShiftReceipt(false);
+          setReceiptShiftDetails(null);
+          setReceiptTransactions([]);
+        }}
       />
 
     </div>

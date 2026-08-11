@@ -13,7 +13,7 @@ interface ShiftReportTabProps {
   transactions: Transaction[];
   alerts: ShiftAlert[];
   onAddNote: (noteText: string) => void;
-  onCloseShift: (manualMeters: { [key: string]: string }) => void;
+  onCloseShift: () => void;
   prices: { [key: string]: number };
   isShiftClosing?: boolean;
   activeDispensingCount?: number;
@@ -91,9 +91,8 @@ export default function ShiftReportTab({
   };
 
   const handleCloseShiftSubmit = () => {
-    // Open a beautiful printable modal summarizing the closed shift
-    setShowReceiptModal(true);
-    onCloseShift(manualMeters);
+    // Usa el mismo modal de confirmación del dashboard (contadores PTS + pendientes)
+    onCloseShift();
   };
 
   return (

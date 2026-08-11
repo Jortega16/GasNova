@@ -320,6 +320,7 @@ export const api = {
     operatorName: string,
     endTime: string,
     counterBreakdown?: unknown[],
+    setClosing: boolean = true,
   ): Promise<BackendApiResponse> {
     return apiFetch("shifts/close", {
       method: "POST",
@@ -329,7 +330,22 @@ export const api = {
         end_time: endTime,
         status: "Closed",
         counter_breakdown: counterBreakdown ?? [],
+        set_closing: setClosing,
       }),
+    });
+  },
+
+  async captureShiftOpeningCounters(
+    shiftId: string,
+    force: boolean = false,
+  ): Promise<BackendApiResponse<{
+    shift_id: string;
+    opening_counters: unknown[];
+    captured: boolean;
+  }>> {
+    const qs = force ? "?force=true" : "";
+    return apiFetch(`shifts/${encodeURIComponent(shiftId)}/opening-counters${qs}`, {
+      method: "POST",
     });
   },
 

@@ -529,6 +529,12 @@ def test_shift_close_creates_frozen_shift_closure(client):
     assert data["closure"]["total_volume"] == 20.0
     assert data["closure"]["transaction_count"] == 1
     assert data["closure"]["payment_breakdown"][0]["payment_type"] == "Tarjeta"
+    assert data["new_shift"]["status"] == "Active"
+    assert data["new_shift"]["opening_counters"] is not None
+    assert len(data["closure"]["counter_breakdown"]) >= 1
+    row = data["closure"]["counter_breakdown"][0]
+    assert "mech_volume" in row
+    assert "system_volume" in row
 
     db = TestingSessionLocal()
     try:

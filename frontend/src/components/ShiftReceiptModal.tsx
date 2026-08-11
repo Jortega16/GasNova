@@ -39,18 +39,19 @@ export default function ShiftReceiptModal({
   currencySymbol,
   onClose,
 }: ShiftReceiptModalProps) {
-  const [mechCounters, setMechCounters] = useState<Record<number, { vol: number; amt: number }>>({});
+  const [mechCounters, setMechCounters] = useState<Record<number, { vol: number; amt: number; ok: boolean }>>({});
 
   useEffect(() => {
     if (!show) return;
     const fetchAll = async () => {
-      const results: Record<number, { vol: number; amt: number }> = {};
+      const results: Record<number, { vol: number; amt: number; ok: boolean }> = {};
       await Promise.allSettled(
         dispensers.map(async d => {
           const res = await api.getPumpCounters(d.id);
           results[d.id] = {
             vol: res.ok && res.data ? res.data.total_volume : 0,
             amt: res.ok && res.data ? res.data.total_amount : 0,
+            ok: !!(res.ok && res.data),
           };
         })
       );
@@ -84,13 +85,25 @@ export default function ShiftReceiptModal({
   const nozzleRows = Array.from(nozzleMap.values()).sort((a, b) => a.pumpName.localeCompare(b.pumpName));
 
   // Counter per dispenser
-  const counterRows = dispensers.map(d => ({
-    id: d.id,
-    name: d.name,
-    vol: transactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.volume, 0),
-    amt: transactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.amount, 0),
-    count: transactions.filter(t => t.pumpId === d.id).length,
-  }));
+  const openingByPump = new Map<number, number>();
+  (shiftDetails.openingCounters || []).forEach(row => {
+    openingByPump.set(row.pump_id, row.volume);
+  });
+  const counterRows = dispensers.map(d => {
+    const systemVol = transactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.volume, 0);
+    const closing = mechCounters[d.id];
+    const opening = openingByPump.get(d.id);
+    const ptsDelta = opening != null && closing?.ok ? closing.vol - opening : null;
+    const diff = ptsDelta != null ? ptsDelta - systemVol : null;
+    return {
+      id: d.id,
+      name: d.name,
+      vol: systemVol,
+      count: transactions.filter(t => t.pumpId === d.id).length,
+      ptsDelta,
+      diff,
+    };
+  });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm">
@@ -220,29 +233,34 @@ export default function ShiftReceiptModal({
                 <thead>
                   <tr className="bg-slate-50 border-b border-neutral-200">
                     <th className="text-left px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Cara</th>
-                    <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Sist. {unit}</th>
-                    <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Mec. {unit}</th>
-                    <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Dif.</th>
-                    <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">#</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {counterRows.map(r => {
-                    const mech = mechCounters[r.id] ?? { vol: 0, amt: 0 };
-                    const diff = mech.vol - r.vol;
-                    return (
-                      <tr key={r.id} className="border-b border-neutral-100 last:border-0 hover:bg-slate-50">
-                        <td className="px-3 py-1.5 font-semibold text-slate-700">{r.name}</td>
-                        <td className="px-3 py-1.5 text-right font-mono text-slate-600">{r.vol.toFixed(2)}</td>
-                        <td className="px-3 py-1.5 text-right font-mono text-slate-600">{mech.vol.toFixed(2)}</td>
-                        <td className={`px-3 py-1.5 text-right font-bold ${diff === 0 ? 'text-emerald-600' : diff > 0 ? 'text-amber-600' : 'text-red-600'}`}>
-                          {diff >= 0 ? '+' : ''}{diff.toFixed(2)}
-                        </td>
-                        <td className="px-3 py-1.5 text-right text-slate-400">{r.count}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
+                      <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Sist. {unit}</th>
+                      <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">PTS turno</th>
+                      <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Dif.</th>
+                      <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">#</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {counterRows.map(r => {
+                      const diff = r.diff;
+                      return (
+                        <tr key={r.id} className="border-b border-neutral-100 last:border-0 hover:bg-slate-50">
+                          <td className="px-3 py-1.5 font-semibold text-slate-700">{r.name}</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-slate-600">{r.vol.toFixed(2)}</td>
+                          <td className="px-3 py-1.5 text-right font-mono text-slate-600">
+                            {r.ptsDelta != null ? r.ptsDelta.toFixed(2) : '—'}
+                          </td>
+                          <td className={`px-3 py-1.5 text-right font-bold ${
+                            diff == null ? 'text-slate-400' :
+                            Math.abs(diff) < 0.05 ? 'text-emerald-600' :
+                            diff > 0 ? 'text-amber-600' : 'text-red-600'
+                          }`}>
+                            {diff == null ? '—' : `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}`}
+                          </td>
+                          <td className="px-3 py-1.5 text-right text-slate-400">{r.count}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
               </table>
             </div>
           </div>
@@ -251,7 +269,7 @@ export default function ShiftReceiptModal({
           <div className="flex items-center justify-between bg-red-50 border border-red-200 rounded-xl px-4 py-2.5">
             <span className="text-xs text-red-700 font-semibold">Estado del turno</span>
             <span className="bg-red-600 text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wide">
-              CERRADO Y BLOQUEADO
+              TURNO CERRADO
             </span>
           </div>
 

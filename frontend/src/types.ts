@@ -116,6 +116,13 @@ export interface ShiftDetails {
   startTime: string;
   endTime: string;
   status: 'Active' | 'Closed';
+  /** Snapshot PTS al abrir: [{pump_id, volume, amount, ...}] */
+  openingCounters?: Array<{
+    pump_id: number;
+    pump_name?: string;
+    volume: number;
+    amount: number;
+  }>;
 }
 
 export type UserRole = 'Admin' | 'Manager' | 'Supervisor' | 'Operator';

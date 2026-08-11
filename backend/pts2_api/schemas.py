@@ -154,6 +154,10 @@ class ShiftResponse(ApiModel):
     start_time: str | None = None
     end_time: str | None = None
     status: str
+    opening_counters: list[Any] | None = Field(
+        default=None,
+        description="Snapshot PumpGetTotals por cara al abrir el turno.",
+    )
 
 
 class TransactionCreate(ApiModel):

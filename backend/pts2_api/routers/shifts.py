@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..dependencies import get_pts2_client
 from ..models import Shift, PumpTransaction, PendingTransaction, ShiftClosure
+from ..pump_counters import (
+    build_shift_counter_breakdown,
+    read_all_pump_counters,
+)
 from ..schemas import CommandResponse, ShiftCreate, ShiftResponse
 from ..transaction_store import build_shift_closure_totals, serialize_pending_transaction
 
@@ -32,23 +36,90 @@ def seed_initial_shift_if_empty(db: Session) -> None:
         db.commit()
 
 
+def _serialize_shift(s: Shift) -> dict[str, Any]:
+    return ShiftResponse(
+        id=s.id,
+        shift_id=s.shift_id,
+        operator_name=s.operator_name,
+        start_time=s.start_time,
+        end_time=s.end_time,
+        status=s.status,
+        opening_counters=s.opening_counters,
+    ).model_dump()
+
+
+def _ensure_opening_counters(db: Session, shift: Shift, client) -> list[dict[str, Any]]:
+    """Captura snapshot de apertura si aún no existe."""
+    if shift.opening_counters:
+        return list(shift.opening_counters)
+    try:
+        snapshot = read_all_pump_counters(client, db)
+    except Exception:
+        snapshot = []
+    if snapshot:
+        shift.opening_counters = snapshot
+        db.commit()
+        db.refresh(shift)
+    return snapshot
+
+
 @router.get("", response_model=CommandResponse, summary="Get shift logs")
-def list_shifts(db: Session = Depends(get_db)) -> CommandResponse:
+def list_shifts(
+    db: Session = Depends(get_db),
+    client=Depends(get_pts2_client),
+) -> CommandResponse:
     """Get the history of closed and active station shifts."""
     seed_initial_shift_if_empty(db)
+    try:
+        active = db.query(Shift).filter(Shift.status == "Active").order_by(Shift.created_at.desc()).first()
+        if active and not active.opening_counters:
+            _ensure_opening_counters(db, active, client)
+    except Exception:
+        pass
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
     shifts = db.query(Shift).order_by(Shift.created_at.desc()).all()
-    serialized = [
-        ShiftResponse(
-            id=s.id,
-            shift_id=s.shift_id,
-            operator_name=s.operator_name,
-            start_time=s.start_time,
-            end_time=s.end_time,
-            status=s.status
-        ).model_dump()
-        for s in shifts
-    ]
-    return CommandResponse(data=serialized)
+    return CommandResponse(data=[_serialize_shift(s) for s in shifts])
+
+
+@router.post(
+    "/{shift_id}/opening-counters",
+    response_model=CommandResponse,
+    summary="Capturar contadores de apertura del turno",
+)
+def capture_opening_counters(
+    shift_id: str = Path(...),
+    force: bool = False,
+    db: Session = Depends(get_db),
+    client=Depends(get_pts2_client),
+) -> CommandResponse:
+    """Guarda PumpGetTotals actuales como baseline del turno activo."""
+    shift = db.query(Shift).filter(Shift.shift_id == shift_id, Shift.status == "Active").first()
+    if not shift:
+        raise HTTPException(status_code=404, detail="Turno activo no encontrado")
+    if shift.opening_counters and not force:
+        return CommandResponse(data={
+            "shift_id": shift.shift_id,
+            "opening_counters": shift.opening_counters,
+            "captured": False,
+            "message": "Ya existía snapshot de apertura",
+        })
+    try:
+        snapshot = read_all_pump_counters(client, db)
+    finally:
+        client.close()
+    shift.opening_counters = snapshot
+    db.commit()
+    db.refresh(shift)
+    return CommandResponse(data={
+        "shift_id": shift.shift_id,
+        "opening_counters": shift.opening_counters,
+        "captured": True,
+    })
 
 
 @router.post("/close", response_model=CommandResponse, summary="Close active shift")
@@ -57,31 +128,28 @@ def close_shift(
     db: Session = Depends(get_db),
     client=Depends(get_pts2_client),
 ) -> CommandResponse:
-    """Cierra el turno activo. Si set_closing=true envía ShiftClose con SetClosing al PTS-2 (cierre graceful)."""
-    # Enviar ShiftClose al controlador PTS-2
-    try:
-        pts_payload: dict = {}
-        if request.set_closing:
-            pts_payload["SetClosing"] = True
-        client.request_data("ShiftClose", pts_payload if pts_payload else None)
-    except Exception:
-        pass  # PTS-2 offline: continuar con cierre local
-    finally:
-        client.close()
-
-    # Try to find the active shift by ID or get the latest active shift
+    """Cierra el turno activo con auditoría de contadores (apertura → cierre)."""
     active_shift = db.query(Shift).filter(
         Shift.shift_id == request.shift_id,
-        Shift.status == "Active"
+        Shift.status == "Active",
     ).first()
 
     if not active_shift:
-        # Fallback to the latest active shift in database
-        active_shift = db.query(Shift).filter(Shift.status == "Active").order_by(Shift.created_at.desc()).first()
+        active_shift = (
+            db.query(Shift)
+            .filter(Shift.status == "Active")
+            .order_by(Shift.created_at.desc())
+            .first()
+        )
 
     if not active_shift:
+        try:
+            client.close()
+        except Exception:
+            pass
         raise HTTPException(status_code=404, detail="No se encontró un turno activo para cerrar")
 
+    # 1) Pendientes primero — no tocar PTS/BD si hay cobros pendientes
     pending_transactions = db.query(PendingTransaction).filter(
         or_(
             PendingTransaction.shift_id == active_shift.shift_id,
@@ -89,6 +157,10 @@ def close_shift(
         )
     ).all()
     if pending_transactions:
+        try:
+            client.close()
+        except Exception:
+            pass
         raise HTTPException(
             status_code=409,
             detail={
@@ -96,6 +168,54 @@ def close_shift(
                 "pending_transactions": [serialize_pending_transaction(p) for p in pending_transactions],
             },
         )
+
+    # 2) SetClosing graceful (bloquea nuevas autorizaciones en PTS)
+    if request.set_closing:
+        try:
+            client.request_data("ShiftClose", {"SetClosing": True})
+        except Exception:
+            pass
+
+    # 3) Contadores de cierre + enriquecer con apertura
+    opening = list(active_shift.opening_counters or [])
+    if not opening:
+        opening = _ensure_opening_counters(db, active_shift, client)
+
+    try:
+        closing = read_all_pump_counters(client, db)
+    except Exception:
+        # Fallback: confiar en lo que mandó el POS
+        closing = []
+        for row in (request.counter_breakdown or []):
+            if isinstance(row, dict) and row.get("pump_id") is not None:
+                closing.append({
+                    "pump_id": row["pump_id"],
+                    "pump_name": row.get("pump_name"),
+                    "volume": row.get("closing_volume", row.get("mech_volume", 0)),
+                    "amount": row.get("closing_amount", row.get("mech_amount", 0)),
+                })
+
+    system_by_pump: dict[int, dict[str, float]] = {}
+    for row in (request.counter_breakdown or []):
+        if not isinstance(row, dict):
+            continue
+        try:
+            pid = int(row.get("pump_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not pid:
+            continue
+        system_by_pump[pid] = {
+            "volume": float(row.get("system_volume") or 0),
+            "amount": float(row.get("system_amount") or 0),
+            "dispatch_count": float(row.get("dispatch_count") or 0),
+        }
+
+    counter_breakdown = build_shift_counter_breakdown(
+        opening=opening,
+        closing=closing,
+        system_by_pump=system_by_pump,
+    )
 
     shift_transactions = db.query(PumpTransaction).filter(
         PumpTransaction.shift_id == active_shift.shift_id
@@ -114,20 +234,17 @@ def close_shift(
         payment_breakdown=totals["payment_breakdown"],
         pending_count=0,
         closure_status="Closed",
-        counter_breakdown=request.counter_breakdown or [],
+        counter_breakdown=counter_breakdown,
     )
     db.add(shift_closure)
 
-    # Update active shift details
     active_shift.status = "Closed"
     active_shift.end_time = request.end_time or "Now"
     db.commit()
     db.refresh(active_shift)
     db.refresh(shift_closure)
 
-    # Automatically create a new active shift for the next operator / schedule.
-    # Usa la fecha de HOY (no la del turno anterior) y reinicia el consecutivo
-    # al cambiar de día; tolera shift_ids con formato inesperado.
+    # 4) Siguiente turno — hereda contadores de cierre como apertura
     today = datetime.now().strftime("%Y%m%d")
     parts = active_shift.shift_id.split("-")
     prev_date = parts[1] if len(parts) >= 3 else ""
@@ -139,7 +256,6 @@ def close_shift(
     else:
         next_num = 1
     next_id = f"SH-{today}-{str(next_num).zfill(2)}"
-    # Garantizar unicidad ante colisiones (constraint UNIQUE en shift_id)
     while db.query(Shift).filter(Shift.shift_id == next_id).first():
         next_num += 1
         next_id = f"SH-{today}-{str(next_num).zfill(2)}"
@@ -149,21 +265,26 @@ def close_shift(
         operator_name=request.operator_name,
         start_time=request.end_time or "Now",
         end_time="",
-        status="Active"
+        status="Active",
+        opening_counters=closing or None,
     )
     db.add(next_shift)
     db.commit()
+    db.refresh(next_shift)
 
-    res = ShiftResponse(
-        id=active_shift.id,
-        shift_id=active_shift.shift_id,
-        operator_name=active_shift.operator_name,
-        start_time=active_shift.start_time,
-        end_time=active_shift.end_time,
-        status=active_shift.status
-    )
+    # 5) Cierre definitivo en PTS (después de persistir)
+    try:
+        client.request_data("ShiftClose", None)
+    except Exception:
+        pass
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
     return CommandResponse(data={
-        "closed_shift": res.model_dump(),
+        "closed_shift": _serialize_shift(active_shift),
         "closure": {
             "id": shift_closure.id,
             "shift_id": shift_closure.shift_id,
@@ -184,8 +305,9 @@ def close_shift(
             "shift_id": next_shift.shift_id,
             "operator_name": next_shift.operator_name,
             "start_time": next_shift.start_time,
-            "status": next_shift.status
-        }
+            "status": next_shift.status,
+            "opening_counters": next_shift.opening_counters,
+        },
     })
 
 
@@ -193,9 +315,9 @@ def close_shift(
 def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> CommandResponse:
     """Lista transacciones del turno (volumen tal cual; sin conversión Gal↔L)."""
     transactions = db.query(PumpTransaction).filter(PumpTransaction.shift_id == shift_id).all()
-    
-    fuel_grades = ['Regular Unleaded', 'Premium Unleaded', 'Diesel', 'Kerosene']
-    
+
+    fuel_grades = ["Regular Unleaded", "Premium Unleaded", "Diesel", "Kerosene"]
+
     serialized = []
     for t in transactions:
         nozzle = t.nozzle or 1
@@ -209,13 +331,11 @@ def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> Com
                 or t.raw_payload.get("fuel_type")
             )
         if not fuel_type:
-            fuel_type = fuel_grades[nozzle - 1] if 1 <= nozzle <= len(fuel_grades) else 'Regular Unleaded'
-        
-        volume_val = t.volume or 0.0
+            fuel_type = fuel_grades[nozzle - 1] if 1 <= nozzle <= len(fuel_grades) else "Regular Unleaded"
 
-        # Format date time
+        volume_val = t.volume or 0.0
         date_str = t.created_at.strftime("%Y-%m-%d %I:%M %p") if t.created_at else "N/A"
-        
+
         serialized.append({
             "id": f"TRX-{t.transaction_id}",
             "dateTime": date_str,
@@ -225,7 +345,7 @@ def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> Com
             "amount": round(t.amount or 0.0, 2),
             "fuelType": fuel_type,
             "fuel_type": fuel_type,
-            "paymentType": t.payment_type or "Cash"
+            "paymentType": t.payment_type or "Cash",
         })
-        
+
     return CommandResponse(data=serialized)

@@ -41,23 +41,37 @@ export default function ShiftCloseConfirmModal({
   onCancel,
 }: ShiftCloseConfirmModalProps) {
   const [step, setStep] = useState<1 | 2>(1);
-  const [mechCounters, setMechCounters] = useState<Record<number, { vol: number; amt: number }>>({});
+  /** Totales de cierre (absolutos PTS) por cara */
+  const [closingCounters, setClosingCounters] = useState<Record<number, { vol: number; amt: number; ok: boolean }>>({});
+  const [countersLoading, setCountersLoading] = useState(false);
+  const [countersAttempted, setCountersAttempted] = useState(false);
 
   useEffect(() => {
-    if (!show) return;
-    // Carga contadores mecánicos del PTS-2 para cada dispensador; defaultea a 0 si falla
+    if (!show) {
+      setClosingCounters({});
+      setCountersAttempted(false);
+      setCountersLoading(false);
+      setStep(1);
+      return;
+    }
+    setStep(1);
+    setCountersLoading(true);
+    setCountersAttempted(false);
     const fetchAll = async () => {
-      const results: Record<number, { vol: number; amt: number }> = {};
+      const results: Record<number, { vol: number; amt: number; ok: boolean }> = {};
       await Promise.allSettled(
         dispensers.map(async d => {
           const res = await api.getPumpCounters(d.id);
           results[d.id] = {
             vol: res.ok && res.data ? res.data.total_volume : 0,
             amt: res.ok && res.data ? res.data.total_amount : 0,
+            ok: !!(res.ok && res.data),
           };
         })
       );
-      setMechCounters(results);
+      setClosingCounters(results);
+      setCountersAttempted(true);
+      setCountersLoading(false);
     };
     fetchAll();
   }, [show, dispensers]);
@@ -69,6 +83,30 @@ export default function ShiftCloseConfirmModal({
   const totalVolume = transactions.reduce((s, t) => s + t.volume, 0);
   const cashAmount = transactions.filter(t => t.paymentType === "Cash").reduce((s, t) => s + t.amount, 0);
   const cardAmount = transactions.filter(t => t.paymentType !== "Cash").reduce((s, t) => s + t.amount, 0);
+
+  const pendingCount = dispensers.reduce(
+    (s, d) => s + d.nozzles.reduce((ns, n) => ns + (n.pendingTransactions?.length || 0), 0),
+    0,
+  );
+  const unpaidOpen = dispensers.some(d =>
+    d.nozzles.some(n => n.status === 'Unpaid' || n.status === 'EndOfTransaction'),
+  );
+  const countersFailed = countersAttempted && dispensers.some(d => {
+    const c = closingCounters[d.id];
+    return !c || !c.ok;
+  });
+  const canConfirm =
+    pendingCount === 0 &&
+    !unpaidOpen &&
+    !countersLoading &&
+    countersAttempted &&
+    !countersFailed;
+
+
+  const openingByPump = new Map<number, { volume: number; amount: number }>();
+  (shiftDetails.openingCounters || []).forEach(row => {
+    openingByPump.set(row.pump_id, { volume: row.volume, amount: row.amount });
+  });
 
   // Sales by fuel type
   const fuelRows = (["Regular Unleaded", "Premium Unleaded", "Diesel", "Kerosene", "LPG"] as FuelType[]).map(key => ({
@@ -92,14 +130,39 @@ export default function ShiftCloseConfirmModal({
   }
   const nozzleRows = Array.from(nozzleMap.values()).sort((a, b) => a.pumpName.localeCompare(b.pumpName));
 
-  // Counter per dispenser (system totals from transactions)
-  const counterRows = dispensers.map(d => ({
-    id: d.id,
-    name: d.name,
-    vol: transactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.volume, 0),
-    amt: transactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.amount, 0),
-    count: transactions.filter(t => t.pumpId === d.id).length,
-  }));
+  // Counter per dispenser: Sistema (POS) vs PTS turno (cierre − apertura)
+  const counterRows = dispensers.map(d => {
+    const systemVol = transactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.volume, 0);
+    const systemAmt = transactions.filter(t => t.pumpId === d.id).reduce((s, t) => s + t.amount, 0);
+    const count = transactions.filter(t => t.pumpId === d.id).length;
+    const closing = closingCounters[d.id];
+    const opening = openingByPump.get(d.id);
+    const hasOpening = opening != null;
+    const hasClosing = !!(closing && closing.ok);
+    const ptsDelta = hasOpening && hasClosing
+      ? closing!.vol - opening!.volume
+      : (hasClosing ? closing!.vol : null);
+    const diff = ptsDelta != null ? ptsDelta - systemVol : null;
+    return {
+      id: d.id,
+      name: d.name,
+      vol: systemVol,
+      amt: systemAmt,
+      count,
+      ptsDelta,
+      diff,
+      hasOpening,
+      hasClosing,
+      closingVol: closing?.vol ?? null,
+      openingVol: opening?.volume ?? null,
+    };
+  });
+
+  // Payload al confirmar: volumen/monto de CIERRE absolutos (backend calcula delta)
+  const closingPayload: Record<number, { vol: number; amt: number }> = {};
+  Object.entries(closingCounters).forEach(([id, v]) => {
+    closingPayload[Number(id)] = { vol: v.vol, amt: v.amt };
+  });
 
   const handleClose = () => { setStep(1); onCancel(); };
 
@@ -244,30 +307,43 @@ export default function ShiftCloseConfirmModal({
             {/* Counters per dispenser */}
             <div className="space-y-1.5">
               <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                <Gauge className="w-3.5 h-3.5" /> Contadores por Cara
+                <Gauge className="w-3.5 h-3.5" /> Contadores por Cara (turno)
               </p>
+              {countersLoading && (
+                <p className="text-[11px] text-slate-500 px-1">Leyendo totalizadores del PTS-2…</p>
+              )}
+              {countersFailed && !countersLoading && (
+                <p className="text-[11px] font-bold text-rose-600 px-1">
+                  Lectura PTS incompleta — no se puede cerrar hasta obtener contadores de todas las caras.
+                </p>
+              )}
               <div className="rounded-xl border border-neutral-200 overflow-hidden">
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="bg-slate-50 border-b border-neutral-200">
                       <th className="text-left px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Cara</th>
                       <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Sist. {unit}</th>
-                      <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Mec. {unit}</th>
+                      <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">PTS turno</th>
                       <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Dif.</th>
                       <th className="text-right px-3 py-1.5 text-[10px] font-bold text-slate-500 uppercase tracking-wide">#</th>
                     </tr>
                   </thead>
                   <tbody>
                     {counterRows.map(r => {
-                      const mech = mechCounters[r.id] ?? { vol: 0, amt: 0 };
-                      const diff = mech.vol - r.vol;
+                      const diff = r.diff;
                       return (
                         <tr key={r.id} className="border-b border-neutral-100 last:border-0 hover:bg-slate-50">
                           <td className="px-3 py-1.5 font-semibold text-slate-700">{r.name}</td>
                           <td className="px-3 py-1.5 text-right font-mono text-slate-600">{r.vol.toFixed(2)}</td>
-                          <td className="px-3 py-1.5 text-right font-mono text-slate-600">{mech.vol.toFixed(2)}</td>
-                          <td className={`px-3 py-1.5 text-right font-bold ${diff === 0 ? 'text-emerald-600' : diff > 0 ? 'text-amber-600' : 'text-red-600'}`}>
-                            {diff >= 0 ? '+' : ''}{diff.toFixed(2)}
+                          <td className="px-3 py-1.5 text-right font-mono text-slate-600">
+                            {r.ptsDelta != null ? r.ptsDelta.toFixed(2) : (r.hasClosing ? '—' : 'sin lectura')}
+                          </td>
+                          <td className={`px-3 py-1.5 text-right font-bold ${
+                            diff == null ? 'text-slate-400' :
+                            diff === 0 ? 'text-emerald-600' : Math.abs(diff) < 0.05 ? 'text-emerald-600' :
+                            diff > 0 ? 'text-amber-600' : 'text-red-600'
+                          }`}>
+                            {diff == null ? '—' : `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}`}
                           </td>
                           <td className="px-3 py-1.5 text-right text-slate-400">{r.count}</td>
                         </tr>
@@ -276,6 +352,9 @@ export default function ShiftCloseConfirmModal({
                   </tbody>
                 </table>
               </div>
+              <p className="text-[10px] text-slate-400 px-1">
+                PTS turno = totalizador al cierre − totalizador al abrir el turno. Dif. = PTS turno − ventas del sistema.
+              </p>
             </div>
 
           </div>
@@ -303,8 +382,49 @@ export default function ShiftCloseConfirmModal({
                 <li>Todos los cobros pendientes fueron procesados</li>
                 <li>El operador saliente está presente para firmar el reporte</li>
               </ul>
+              {!canConfirm && (
+                <p className="mt-2 font-bold text-rose-700">
+                  {pendingCount > 0
+                    ? `Hay ${pendingCount} venta(s) pendiente(s) de cobro — cobrelas antes de cerrar.`
+                    : unpaidOpen
+                      ? 'Hay mangueras con cobro pendiente o fin de despacho — finalícelas antes de cerrar.'
+                      : countersLoading
+                        ? 'Espere a que terminen de leerse los contadores del PTS.'
+                        : countersFailed
+                          ? 'No se pudieron leer los contadores del PTS-2 en una o más caras. Verifique la conexión y reabra el cierre.'
+                          : 'No se puede confirmar el cierre todavía.'}
+                </p>
+              )}
+              {countersFailed && !countersLoading && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCountersLoading(true);
+                    setCountersAttempted(false);
+                    const fetchAll = async () => {
+                      const results: Record<number, { vol: number; amt: number; ok: boolean }> = {};
+                      await Promise.allSettled(
+                        dispensers.map(async d => {
+                          const res = await api.getPumpCounters(d.id);
+                          results[d.id] = {
+                            vol: res.ok && res.data ? res.data.total_volume : 0,
+                            amt: res.ok && res.data ? res.data.total_amount : 0,
+                            ok: !!(res.ok && res.data),
+                          };
+                        })
+                      );
+                      setClosingCounters(results);
+                      setCountersAttempted(true);
+                      setCountersLoading(false);
+                    };
+                    fetchAll();
+                  }}
+                  className="mt-2 text-[11px] font-bold text-[#1b365d] underline cursor-pointer"
+                >
+                  Reintentar lectura de contadores
+                </button>
+              )}
             </div>
-
             <div className="bg-slate-50 border border-neutral-200 rounded-xl p-3 flex justify-between text-xs">
               <span className="text-slate-500">Turno a cerrar:</span>
               <span className="font-bold text-slate-800 font-mono">{shiftDetails.shiftId}</span>
@@ -319,7 +439,15 @@ export default function ShiftCloseConfirmModal({
               <button onClick={handleClose} className="flex-1 border border-neutral-300 text-slate-600 font-bold text-xs py-2.5 rounded-lg hover:bg-neutral-100 transition-colors cursor-pointer">
                 Cancelar
               </button>
-              <button onClick={() => setStep(2)} className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs py-2.5 rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer">
+              <button
+                onClick={() => { if (!canConfirm) return; setStep(2); }}
+                disabled={!canConfirm}
+                className={`flex-1 font-bold text-xs py-2.5 rounded-lg flex items-center justify-center gap-1.5 transition-colors ${
+                  canConfirm
+                    ? 'bg-rose-600 hover:bg-rose-700 text-white cursor-pointer'
+                    : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                }`}
+              >
                 Siguiente <ChevronRight className="w-4 h-4" />
               </button>
             </>
@@ -328,7 +456,15 @@ export default function ShiftCloseConfirmModal({
               <button onClick={() => setStep(1)} className="flex-1 border border-neutral-300 text-slate-600 font-bold text-xs py-2.5 rounded-lg hover:bg-neutral-100 transition-colors cursor-pointer">
                 ← Volver
               </button>
-              <button onClick={() => { setStep(1); onConfirm(mechCounters); }} className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs py-2.5 rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer">
+              <button
+                onClick={() => { if (!canConfirm) return; setStep(1); onConfirm(closingPayload); }}
+                disabled={!canConfirm}
+                className={`flex-1 font-bold text-xs py-2.5 rounded-lg flex items-center justify-center gap-1.5 transition-colors ${
+                  canConfirm
+                    ? 'bg-rose-600 hover:bg-rose-700 text-white cursor-pointer'
+                    : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                }`}
+              >
                 <Lock className="w-3.5 h-3.5" /> Cerrar Turno Definitivamente
               </button>
             </>

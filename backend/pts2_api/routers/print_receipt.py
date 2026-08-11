@@ -482,11 +482,19 @@ def _build_closure_bytes(req: PrintClosureRequest, cfg: Dict[str, Any] = _print_
             name         = _safe(cb.get("pump_name", f"Cara {cb.get('pump_id', '?')}"))
             sys_vol      = cb.get("system_volume", 0.0)
             mech_vol     = cb.get("mech_volume", 0.0)
-            diff         = mech_vol - sys_vol
-            diff_str     = f"{'+' if diff >= 0 else ''}{diff:.2f} {unit_suffix}"
+            diff         = cb.get("diff_volume")
+            if diff is None:
+                diff = mech_vol - sys_vol
+            diff_str     = f"{'+' if diff >= 0 else ''}{float(diff):.2f} {unit_suffix}"
             buf += _enc(f"  {name[:W-2]}") + LF
+            open_vol = cb.get("opening_volume")
+            close_vol = cb.get("closing_volume")
+            if open_vol is not None:
+                buf += _lr_bytes("    Apertura:", f"{float(open_vol):.2f} {unit_suffix}", W)
+            if close_vol is not None:
+                buf += _lr_bytes("    Cierre:", f"{float(close_vol):.2f} {unit_suffix}", W)
             buf += _lr_bytes("    Sistema:", f"{sys_vol:.2f} {unit_suffix}", W)
-            buf += _lr_bytes("    Mecanico:", f"{mech_vol:.2f} {unit_suffix}", W)
+            buf += _lr_bytes("    PTS turno:", f"{mech_vol:.2f} {unit_suffix}", W)
             buf += _lr_bytes("    Diferencia:", diff_str, W)
         buf += _div('-', W)
 
