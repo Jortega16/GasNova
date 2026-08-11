@@ -108,8 +108,8 @@ const CARD_STATE = {
     badge: 'bg-slate-800/60 text-slate-500 border-slate-700/30',
     badgeText: 'EN REPOSO',
     ledBg: 'bg-[#070b0f]',
-    ledValue: '#166534',
-    ledDim: '#0d2015',
+    ledValue: '#94a3b8',
+    ledDim: '#475569',
   },
 };
 

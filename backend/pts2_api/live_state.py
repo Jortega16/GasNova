@@ -21,6 +21,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from .volume_utils import coerce_float, derive_volume
+
 
 @dataclass
 class _PumpSnapshot:
@@ -110,7 +112,9 @@ class LiveStateStore:
             peak_amt = existing.fill_peak_amount if existing else 0.0
             fill_seen = existing.fill_seen if existing else False
 
-            # Acumula pico solo durante Filling (despacho real)
+            # Acumula pico solo durante Filling (despacho real).
+            # Algunos firmware solo actualizan Amount en vivo; Volume queda en 0
+            # → derivar litraje con precio de la manguera activa.
             st = (status_type or "").lower()
             is_filling = (
                 status_type == "PumpFillingStatus"
@@ -118,11 +122,13 @@ class LiveStateStore:
                 or "fueling" in st
             )
             if is_filling:
-                try:
-                    v = float(volume or 0)
-                    a = float(amount or 0)
-                except (TypeError, ValueError):
-                    v, a = 0.0, 0.0
+                unit_price = None
+                if prices and nozzle and isinstance(nozzle, int) and nozzle > 0:
+                    idx = nozzle - 1
+                    if 0 <= idx < len(prices):
+                        unit_price = prices[idx]
+                v = derive_volume(volume, amount, unit_price)
+                a = coerce_float(amount)
                 if v > 0 or a > 0:
                     fill_seen = True
                     peak_vol = max(peak_vol, v)

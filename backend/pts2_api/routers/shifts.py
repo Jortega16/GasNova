@@ -334,15 +334,21 @@ def list_shift_transactions(shift_id: str, db: Session = Depends(get_db)) -> Com
             fuel_type = fuel_grades[nozzle - 1] if 1 <= nozzle <= len(fuel_grades) else "Regular Unleaded"
 
         volume_val = t.volume or 0.0
+        amount_val = t.amount or 0.0
+        # Reparar ventas históricas guardadas solo con monto (Volume=0 en el PTS)
+        if volume_val <= 0 and amount_val > 0 and t.unit_price and t.unit_price > 0:
+            volume_val = amount_val / float(t.unit_price)
+
         date_str = t.created_at.strftime("%Y-%m-%d %I:%M %p") if t.created_at else "N/A"
 
         serialized.append({
-            "id": f"TRX-{t.transaction_id}",
+            "id": t.source_pending_trx_id or f"TRX-{t.transaction_id}",
             "dateTime": date_str,
             "pumpId": t.pump_id,
             "pumpName": f"Cara {t.pump_id}",
-            "volume": round(volume_val, 2),
-            "amount": round(t.amount or 0.0, 2),
+            "volume": round(volume_val, 3),
+            "amount": round(amount_val, 2),
+            "unit_price": t.unit_price,
             "fuelType": fuel_type,
             "fuel_type": fuel_type,
             "paymentType": t.payment_type or "Cash",

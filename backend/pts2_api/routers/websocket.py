@@ -73,6 +73,7 @@ from sqlalchemy.orm import Session
 from ..database import SessionLocal
 from ..models import TankMeasurement, InTankDelivery, SystemAlert, PumpEventLog
 from ..transaction_store import upsert_pending_transaction
+from ..volume_utils import derive_volume, resolve_unit_price
 import json
 import logging
 import threading
@@ -217,6 +218,25 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
                 )
                 live_state.reset_fill_cycle(pump_id_val)
             else:
+                peak_vol = float(fill.get("peak_volume") or 0)
+                peak_amt = float(fill.get("peak_amount") or 0)
+                if peak_vol > 0:
+                    upload_volume = peak_vol
+                if peak_amt > 0:
+                    upload_amount = peak_amt
+                unit_price = resolve_unit_price(data)
+                if unit_price is None:
+                    snap = live_state.get_all_pumps(max_age_seconds=60.0).get(pump_id_val) or {}
+                    prices = snap.get("nozzle_prices") or []
+                    nz = data.get("Nozzle") or snap.get("nozzle")
+                    try:
+                        nz_i = int(nz) if nz is not None else 0
+                    except (TypeError, ValueError):
+                        nz_i = 0
+                    if nz_i > 0 and prices and 0 <= (nz_i - 1) < len(prices):
+                        unit_price = float(prices[nz_i - 1] or 0) or None
+                upload_volume = derive_volume(upload_volume, upload_amount, unit_price)
+
                 upsert_pending_transaction(
                     db,
                     pump_id=pump_id_val,

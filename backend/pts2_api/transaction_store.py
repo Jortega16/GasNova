@@ -7,7 +7,6 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .models import PendingTransaction, PumpTransaction, Shift
@@ -69,13 +68,29 @@ def serialize_completed_transaction(transaction: PumpTransaction) -> dict[str, A
 
 
 def normalize_transaction_id(value: str | int | None, fallback: int | None = None) -> int:
+    """Convierte trx_id a entero estable para pump_transactions.transaction_id.
+
+    - int / dígitos puros / ``TRX-<n>`` → ese número (IDs reales del PTS).
+    - Cualquier otro string → hash estable (evita colisiones tipo ``TRX-…-1`` → 1
+      que hacían que el upsert creyera la venta ya cobrada y no la persistiera).
+    """
     if isinstance(value, int):
         return value
-    if value:
-        digits = re.findall(r"\d+", str(value))
-        if digits:
-            return int(digits[-1])
-    return int(fallback or 0)
+    if value is None:
+        return int(fallback or 0)
+    s = str(value).strip()
+    if not s:
+        return int(fallback or 0)
+    if s.isdigit():
+        return int(s)
+    m = re.fullmatch(r"(?i)trx-(\d+)", s)
+    if m:
+        return int(m.group(1))
+    # Hash estilo Java String.hashCode, positivo 31-bit
+    h = 0
+    for ch in s:
+        h = ((h << 5) - h + ord(ch)) & 0x7FFFFFFF
+    return h or int(fallback or 0)
 
 
 def get_active_shift_id(db: Session) -> str | None:
@@ -113,12 +128,10 @@ def upsert_pending_transaction(
         db.refresh(existing)
         return existing, False
 
-    transaction_id = normalize_transaction_id(trx_id)
+    # Solo considerar por trx_id exacto (source_pending). No usar transaction_id
+    # numérico aquí: colisionaba con otras ventas y bloqueaba el alta en cola.
     completed = db.query(PumpTransaction).filter(
-        or_(
-            PumpTransaction.source_pending_trx_id == trx_id,
-            (PumpTransaction.pump_id == pump_id) & (PumpTransaction.transaction_id == transaction_id),
-        )
+        PumpTransaction.source_pending_trx_id == trx_id,
     ).first()
     if completed:
         already_completed = PendingTransaction(
@@ -181,14 +194,21 @@ def complete_pending_transaction(
         raise LookupError("No se encontró la transacción pendiente")
 
     transaction_id = normalize_transaction_id(pending.trx_id, fallback=pending.id)
+    existing_by_source = db.query(PumpTransaction).filter(
+        PumpTransaction.source_pending_trx_id == trx_id,
+    ).first()
+    if existing_by_source:
+        db.delete(pending)
+        db.commit()
+        return existing_by_source, False
+
     existing_completed = db.query(PumpTransaction).filter(
         PumpTransaction.pump_id == pump_id,
         PumpTransaction.transaction_id == transaction_id,
     ).first()
     if existing_completed:
-        db.delete(pending)
-        db.commit()
-        return existing_completed, False
+        # Mismo número de trx en la cara pero otra venta: usar id de fila como clave
+        transaction_id = int(pending.id or 0) + 10_000_000
 
     _FUEL_GRADES = ["Regular Unleaded", "Premium Unleaded", "Diesel", "Kerosene"]
 

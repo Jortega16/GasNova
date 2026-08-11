@@ -198,7 +198,7 @@ export default function RecentTransactions({
 
                 {/* Volume */}
                 <div className="col-span-2 text-right text-slate-400 font-mono text-[10px]">
-                  {trx.volume.toFixed(3)}
+                  {Number(trx.volume || 0).toFixed(3)}
                 </div>
 
                 {/* Amount */}
@@ -237,7 +237,7 @@ export default function RecentTransactions({
               <span className="text-[9px] font-mono text-slate-500 uppercase tracking-widest">Total {unitMeasure === 'Galones' ? 'Galones' : 'Litros'}</span>
             </div>
             <span className="text-sm font-extrabold text-slate-200 font-mono">
-              {totalVolume.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} {unitMeasure === 'Galones' ? 'G' : 'L'}
+              {totalVolume.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} {unitMeasure === 'Galones' ? 'G' : 'L'}
             </span>
           </div>
         </div>

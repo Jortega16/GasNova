@@ -33,6 +33,7 @@ from ..transaction_store import (
     serialize_pending_transaction,
     upsert_pending_transaction,
 )
+from ..volume_utils import derive_volume, resolve_unit_price
 
 router = APIRouter(prefix="/pumps", tags=["pumps"])
 
@@ -999,6 +1000,20 @@ def capture_pending_transaction_from_pts(
         captured_volume = peak_vol
     if peak_amt > 0:
         captured_amount = peak_amt
+
+    # Si el PTS solo mandó monto (Volume=0), derivar litraje con precio unitario
+    unit_price = resolve_unit_price(data)
+    if unit_price is None:
+        snap = live_state.get_all_pumps(max_age_seconds=60.0).get(pump_id) or {}
+        prices = snap.get("nozzle_prices") or []
+        nz = data.get("Nozzle") or data.get("LastNozzle") or snap.get("nozzle")
+        try:
+            nz_i = int(nz) if nz is not None else 0
+        except (TypeError, ValueError):
+            nz_i = 0
+        if nz_i > 0 and prices and 0 <= (nz_i - 1) < len(prices):
+            unit_price = float(prices[nz_i - 1] or 0) or None
+    captured_volume = derive_volume(captured_volume, captured_amount, unit_price)
 
     # Recupera el shift capturado en el momento de la autorización (gap #4).
     auth_shifts: dict = getattr(req.app.state, "pump_auth_shifts", {})
