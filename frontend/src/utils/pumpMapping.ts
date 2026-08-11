@@ -94,7 +94,7 @@ export function mapPumpConfigToDispenser(p: {
           const gradeId = Number(n.fuel_grade_id ?? n.fuelGradeId ?? 0) || (i + 1);
           const rawType = String(n.fuel_type ?? n.fuelType ?? n.name ?? '');
           const fuelType = mapNameToFuelType(rawType, gradeId || undefined);
-          const fuelName = String(n.name ?? rawType || fuelType);
+          const fuelName = String((n.name ?? rawType) || fuelType);
           return idleNozzle(fuelType, { fuelGradeId: gradeId, fuelName });
         })
       : Array.from({ length: p.nozzles_count ?? 1 }, (_, i) =>
