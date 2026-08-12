@@ -290,7 +290,10 @@ export default function App() {
     limitType?: 'Amount' | 'Volume';
     dose?: number;
     shiftId?: string;
+    /** Intentos fallidos de envío al PTS-2 (no llega al surtidor: red caída, PTS-2 offline, etc.) */
+    attempts?: number;
   };
+  const PTS_AUTH_MAX_ATTEMPTS = 5;
   /** Auth local pendiente: solo se envía al PTS cuando la manguera está levantada. */
   const pendingPtsAuthRef = useRef<Map<number, PendingPtsAuth>>(new Map());
   const ptsAuthInFlightRef = useRef<Set<number>>(new Set());
@@ -689,7 +692,40 @@ export default function App() {
               ptsAuthScheduledRef.current.delete(pumpIdToAuth);
               void sendPtsAuthorize(pumpIdToAuth, auth).then((ok) => {
                 if (!ok && pendingMatches) {
-                  pendingPtsAuthRef.current.set(pumpIdToAuth, auth);
+                  const attempts = (auth.attempts || 0) + 1;
+                  if (attempts >= PTS_AUTH_MAX_ATTEMPTS) {
+                    // No llegó al PTS-2 tras varios intentos (controlador
+                    // offline, red caída, etc.) — antes se reintentaba en
+                    // silencio para siempre: la manguera se quedaba mostrando
+                    // "Autorizada/Prepago" sin que nada llegara realmente al
+                    // surtidor y sin ningún aviso al operador.
+                    pendingPtsAuthRef.current.delete(pumpIdToAuth);
+                    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    setAlerts(prevAlerts => [{
+                      id: `AL-AUTH-FAIL-${Math.random()}`,
+                      dateTime: `Hoy ${timeStr}`,
+                      pumpName: `Cara ${pumpIdToAuth}`,
+                      volume: '—',
+                      amount: '—',
+                      paymentType: 'System',
+                      message: `❌ No se pudo autorizar la Cara ${pumpIdToAuth} en el PTS-2 tras ${attempts} intentos — revise la conexión al controlador. La pre-autorización fue cancelada.`,
+                      isCustomNote: true,
+                    }, ...prevAlerts]);
+                    setDispensers(prevDispensers => prevDispensers.map(d => d.id === pumpIdToAuth ? {
+                      ...d,
+                      nozzles: d.nozzles.map(n => n.fuelType === auth.fuelType ? {
+                        ...n,
+                        status: 'Idle' as PumpStatus,
+                        limitAmount: undefined,
+                        isPostpaid: false,
+                        currentAmount: 0,
+                        currentVolume: 0,
+                        progressPercent: 0,
+                      } : n),
+                    } : d));
+                  } else {
+                    pendingPtsAuthRef.current.set(pumpIdToAuth, { ...auth, attempts });
+                  }
                 }
               });
             }, 10);

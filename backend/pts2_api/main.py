@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_redoc_html
+from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
 
 from pts2_sdk.exceptions import PTS2Error
@@ -227,6 +228,40 @@ def create_app() -> FastAPI:
             title=f"{app.title} - ReDoc",
             redoc_favicon_url="https://fastapi.tiangolo.com/img/favicon.png",
         )
+
+    # ── Botón "Authorize" en /docs ────────────────────────────────────────
+    # La autenticación se hace con el middleware de arriba (no con
+    # Depends/Security en cada endpoint), así que por defecto el esquema
+    # OpenAPI no declara ningún securityScheme y Swagger UI nunca muestra el
+    # candado — cada "Try it out" sale sin header y todo endpoint protegido
+    # responde 401. Esto solo anota el esquema OpenAPI para que aparezca el
+    # botón "Authorize" (pegas el token de /users/login una vez y Swagger lo
+    # manda como Bearer en cada request); no cambia en nada la validación
+    # real, que sigue siendo 100% el middleware.
+    def custom_openapi() -> dict:
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+            tags=app.openapi_tags,
+        )
+        schema.setdefault("components", {}).setdefault("securitySchemes", {})["BearerAuth"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "description": "Token emitido por POST /users/login (campo 'token' de la respuesta).",
+        }
+        for path, methods in schema.get("paths", {}).items():
+            for method, operation in methods.items():
+                if (method.upper(), path) in _PUBLIC_EXACT:
+                    continue
+                operation["security"] = [{"BearerAuth": []}]
+        app.openapi_schema = schema
+        return app.openapi_schema
+
+    app.openapi = custom_openapi  # type: ignore[method-assign]
 
     return app
 
