@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Settings, ChevronRight, ChevronLeft, Check, X, Loader2 } from "lucide-react";
 import { api } from "../api";
@@ -97,13 +97,11 @@ function StepDot({ index, current }: { index: number; current: number }) {
 
 // ── Componente principal ──────────────────────────────────────────────────────
 
-export default function PumpConfigWizard({ isOpen, nextPumpId, onSuccess, onCancel }: Props) {
-  const [step, setStep] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const [state, setState] = useState<WizardState>(() => ({
-    fuelGrades: DEFAULT_FUEL_GRADES.map((fg) => ({ ...fg })),
+/** Estado inicial del wizard, recalculado con el ID consecutivo vigente. */
+function buildInitialState(nextPumpId: number): WizardState {
+  const fuelGrades = DEFAULT_FUEL_GRADES.map((fg) => ({ ...fg }));
+  return {
+    fuelGrades,
     pumpId: nextPumpId,
     pumpName: `Cara ${nextPumpId}`,
     port: 1,
@@ -111,11 +109,33 @@ export default function PumpConfigWizard({ isOpen, nextPumpId, onSuccess, onCanc
     baudRate: 4,
     address: nextPumpId,
     nozzles: [
-      { fuelGradeId: 1, fuelGradeName: "Regular Unleaded", price: 4.19 },
-      { fuelGradeId: 2, fuelGradeName: "Premium Unleaded", price: 4.69 },
-      { fuelGradeId: 3, fuelGradeName: "Diesel", price: 4.49 },
+      { fuelGradeId: fuelGrades[0].id, fuelGradeName: fuelGrades[0].name, price: fuelGrades[0].price },
+      { fuelGradeId: fuelGrades[1].id, fuelGradeName: fuelGrades[1].name, price: fuelGrades[1].price },
+      { fuelGradeId: fuelGrades[2].id, fuelGradeName: fuelGrades[2].name, price: fuelGrades[2].price },
     ],
-  }));
+  };
+}
+
+export default function PumpConfigWizard({ isOpen, nextPumpId, onSuccess, onCancel }: Props) {
+  const [step, setStep] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [state, setState] = useState<WizardState>(() => buildInitialState(nextPumpId));
+
+  // El wizard nunca se desmonta (isOpen solo controla si renderiza), así que
+  // sin esto reabrirlo repite el paso/datos de la vez anterior en vez de
+  // arrancar limpio, y el ID/nombre de cara quedan pegados al primer
+  // nextPumpId que tuvo el componente — no al consecutivo vigente de caras
+  // activas (causaba el desfase visto: "Cara 2 (ID 1)").
+  useEffect(() => {
+    if (isOpen) {
+      setStep(0);
+      setError(null);
+      setState(buildInitialState(nextPumpId));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, nextPumpId]);
 
   if (!isOpen) return null;
 
@@ -143,7 +163,11 @@ export default function PumpConfigWizard({ isOpen, nextPumpId, onSuccess, onCanc
 
   const addNozzle = () => {
     if (state.nozzles.length >= 6) return;
-    const fg = state.fuelGrades[0];
+    // Preferir un grado que ninguna otra manguera use todavía, para no
+    // duplicar el mismo combustible (y su precio) por defecto en cada
+    // manguera nueva — antes siempre tomaba fuelGrades[0].
+    const usedIds = new Set(state.nozzles.map((n) => n.fuelGradeId));
+    const fg = state.fuelGrades.find((f) => !usedIds.has(f.id)) ?? state.fuelGrades[0];
     setState((prev) => ({
       ...prev,
       nozzles: [...prev.nozzles, { fuelGradeId: fg.id, fuelGradeName: fg.name, price: fg.price }],

@@ -144,7 +144,6 @@ def test_authorize_rejects_volume_and_amount_together():
     [
         ("suspend", "PumpSuspend", {"Pump": 1}),
         ("resume", "PumpResume", {"Pump": 1}),
-        ("close_transaction", "PumpCloseTransaction", {"Pump": 1}),
         ("lock", "PumpLock", {"Pump": 1}),
         ("unlock", "PumpUnlock", {"Pump": 1}),
         ("emergency_stop_all", "PumpEmergencyStop", {"Pump": 0}),
@@ -169,6 +168,53 @@ def test_pump_pos_commands_build_expected_packets(method_name, expected_type, ex
     packet = client.transport.requests[0]["Packets"][0]
     assert packet["Type"] == expected_type
     assert packet["Data"] == expected_data
+
+
+def test_close_transaction_includes_transaction_number_when_known():
+    # jsonPTS §124: PumpCloseTransaction requires "Transaction" matching the
+    # number from PumpEndOfTransactionStatus — not just "Pump".
+    client = make_client(
+        [
+            {
+                "Protocol": "jsonPTS",
+                "Packets": [{"Id": 1, "Type": "PumpCloseTransaction", "Data": {"OK": True}}],
+            }
+        ]
+    )
+
+    client.pumps.close_transaction(1, transaction=37)
+
+    packet = client.transport.requests[0]["Packets"][0]
+    assert packet["Type"] == "PumpCloseTransaction"
+    assert packet["Data"] == {"Pump": 1, "Transaction": 37}
+
+
+def test_close_transaction_looks_up_transaction_via_status_when_unknown():
+    # If the caller doesn't already know the transaction number, it's fetched
+    # via PumpGetStatus first (same pattern as get_totals/get_prices).
+    client = make_client(
+        [
+            {
+                "Protocol": "jsonPTS",
+                "Packets": [{
+                    "Id": 1,
+                    "Type": "PumpEndOfTransactionStatus",
+                    "Data": {"Pump": 1, "Transaction": 42},
+                }],
+            },
+            {
+                "Protocol": "jsonPTS",
+                "Packets": [{"Id": 2, "Type": "PumpCloseTransaction", "Data": {"OK": True}}],
+            },
+        ]
+    )
+
+    client.pumps.close_transaction(1)
+
+    status_packet, close_packet = (r["Packets"][0] for r in client.transport.requests)
+    assert status_packet["Type"] == "PumpGetStatus"
+    assert close_packet["Type"] == "PumpCloseTransaction"
+    assert close_packet["Data"] == {"Pump": 1, "Transaction": 42}
 
 
 def test_get_prices_polls_status_until_pump_prices_received():

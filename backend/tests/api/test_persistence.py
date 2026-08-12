@@ -226,6 +226,7 @@ def test_delete_pending_transaction_moves_to_completed_as_bajada(client):
 
 def test_upload_pump_transaction_is_saved_as_pending_not_completed(client):
     from pts2_api.routers.websocket import handle_packet
+    from pts2_api.live_state import live_state
     import asyncio
 
     class FakeWebSocket:
@@ -238,6 +239,21 @@ def test_upload_pump_transaction_is_saved_as_pending_not_completed(client):
     db = TestingSessionLocal()
     ws = FakeWebSocket()
     try:
+        # En la vida real, todo despacho real pasa por PumpFillingStatus antes de
+        # llegar el UploadPumpTransaction final — así se distingue una venta real
+        # de una manguera levantada/colgada que reenvía Volume/Amount de la trx
+        # anterior (ver live_state.py: fill_seen / no_live_fill).
+        live_state.reset_fill_cycle(1)
+        live_state.update_pump(
+            1,
+            status_type="PumpFillingStatus",
+            nozzle=1,
+            nozzle_prices=None,
+            volume=8.0,
+            amount=32.0,
+            transaction=888,
+        )
+
         packet = {
             "Id": 1,
             "Type": "UploadPumpTransaction",
@@ -262,7 +278,17 @@ def test_upload_pump_transaction_is_saved_as_pending_not_completed(client):
         event = db.query(PumpEventLog).filter(PumpEventLog.pts_transaction_id == "888").one()
         assert event.event_type == "UploadPumpTransaction"
         assert event.raw_payload["Amount"] == 32.0
+
+        # jsonPTS "CONFIRMATION/ERROR RESPONSE MESSAGE": la confirmación debe
+        # repetir el "Type" del paquete original y usar "Message":"OK" (no un
+        # "Type":"Confirmation" genérico con un objeto "Data").
         assert ws.messages
+        import json as _json
+        ack = _json.loads(ws.messages[0])
+        ack_packet = ack["Packets"][0]
+        assert ack_packet["Id"] == 1
+        assert ack_packet["Type"] == "UploadPumpTransaction"
+        assert ack_packet["Message"] == "OK"
     finally:
         db.close()
 

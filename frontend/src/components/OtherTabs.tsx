@@ -2524,6 +2524,15 @@ export default function OtherTabs({
                         <div className="space-y-1.5">
                           {disp.nozzles.map((n, i) => {
                             const opt = EDITABLE_FUEL_OPTIONS.find(f => f.type === n.fuelType);
+                            // No ofrecer un combustible ya asignado a OTRA manguera de esta
+                            // cara: resolveNozzleNumber() resuelve por findIndex, así que una
+                            // manguera duplicada quedaría inalcanzable en autorización.
+                            const usedByOthers = new Set(
+                              disp.nozzles.filter((_, oi) => oi !== i).map(o => o.fuelType),
+                            );
+                            const selectableFuels = EDITABLE_FUEL_OPTIONS.filter(
+                              f => f.type === n.fuelType || !usedByOthers.has(f.type),
+                            );
                             return (
                               <div
                                 key={`${disp.id}-n-${i}`}
@@ -2539,7 +2548,7 @@ export default function OtherTabs({
                                   className="flex-1 min-w-0 text-[11px] font-semibold text-slate-800 bg-transparent border border-slate-200 rounded px-2 py-1 cursor-pointer focus:outline-none focus:border-[#355e9e]"
                                   title="Cambiar combustible de esta manguera"
                                 >
-                                  {EDITABLE_FUEL_OPTIONS.map((f) => (
+                                  {selectableFuels.map((f) => (
                                     <option key={f.type} value={f.type}>{f.name}</option>
                                   ))}
                                 </select>

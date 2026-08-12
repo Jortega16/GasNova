@@ -91,19 +91,39 @@ def _upsert_setting(db: Session, key: str, value: str) -> None:
         row.value = value
 
 
-def apply_price_to_pts2(client, db: Session, fuel_type: str, new_price: float) -> None:
-    """Push a fuel price to PTS-2 via SetFuelGradesPrices + PumpSetPrices."""
+def apply_price_to_pts2(client, db: Session, fuel_type: str, new_price: float) -> list[int]:
+    """Push a fuel price to PTS-2 via SetFuelGradesPrices + PumpSetPrices.
+
+    Devuelve la lista de pump_id a los que NO se pudo aplicar el precio
+    (p.ej. JSONPTS_ERROR_PUMP_OFFLINE). Una bomba caída ya no aborta todo el
+    ciclo: antes, si una sola PumpSetPrices fallaba, la excepción se propagaba
+    hasta apply_scheduled_prices_cycle y el registro se quedaba "Pending" para
+    siempre reintentando lo mismo — incluso habiendo aplicado ya con éxito el
+    precio global (SetFuelGradesPrices) y el resto de las bombas.
+    """
     cfg = client.request_data("GetFuelGradesConfiguration", None) or {}
     grades = cfg.get("FuelGrades") or cfg.get("fuel_grades") or []
     grade_id = _match_fuel_grade_id(grades, fuel_type)
     if grade_id is None:
         raise RuntimeError(f"No FuelGradeId en PTS-2 para '{fuel_type}'")
 
-    # cmd #55 — precio global por grado
+    # cmd #55 — precio global por grado (crítico: si esto falla, sí se reintenta el ciclo completo)
     client.request_data(
         "SetFuelGradesPrices",
         {"FuelGradesPrices": [{"FuelGradeId": grade_id, "Price": float(new_price)}]},
     )
+
+    def _set_pump_price(pump_id: int, nozzle: int) -> bool:
+        try:
+            client.pumps.set_prices(pump_id, [{"Nozzle": nozzle, "Price": float(new_price)}])
+            return True
+        except Exception as exc:
+            logger.warning(
+                "PumpSetPrices falló para pump=%s (precio global ya aplicado): %s", pump_id, exc
+            )
+            return False
+
+    failed_pumps: list[int] = []
 
     # También por bomba/manguera (PumpSetPrices) usando el mapeo de nozzles
     nozzles_cfg = client.request_data("GetPumpNozzlesConfiguration", None) or {}
@@ -116,21 +136,19 @@ def apply_price_to_pts2(client, db: Session, fuel_type: str, new_price: float) -
                 continue
             for nozzle_idx, fg_id in enumerate(ids):
                 if int(fg_id or 0) == grade_id:
-                    client.pumps.set_prices(
-                        pump_id,
-                        [{"Nozzle": nozzle_idx + 1, "Price": float(new_price)}],
-                    )
+                    if not _set_pump_price(pump_id, nozzle_idx + 1):
+                        failed_pumps.append(pump_id)
     else:
         # Fallback: nozzle = FuelGradeId en cada bomba
         for pump_id in range(1, get_pump_count(db) + 1):
-            client.pumps.set_prices(
-                pump_id,
-                [{"Nozzle": grade_id, "Price": float(new_price)}],
-            )
+            if not _set_pump_price(pump_id, grade_id):
+                failed_pumps.append(pump_id)
 
     setting_key = PRICE_SETTING_KEYS.get(fuel_type.lower().strip())
     if setting_key:
         _upsert_setting(db, setting_key, str(new_price))
+
+    return failed_pumps
 
 
 def apply_scheduled_prices_cycle(db: Session | None = None) -> None:
@@ -165,13 +183,20 @@ def apply_scheduled_prices_cycle(db: Session | None = None) -> None:
             try:
                 client = build_pts2_client(db)
                 try:
-                    apply_price_to_pts2(client, db, schedule.fuel_type, float(schedule.new_price))
+                    failed_pumps = apply_price_to_pts2(client, db, schedule.fuel_type, float(schedule.new_price))
                 finally:
                     client.close()
-                logger.info(
-                    "Applied scheduled price change %s: %s -> %s",
-                    schedule.id, schedule.fuel_type, schedule.new_price
-                )
+                if failed_pumps:
+                    logger.warning(
+                        "Applied scheduled price change %s: %s -> %s (precio global OK; "
+                        "bomba(s) %s no respondieron, ej. offline — revisar manualmente)",
+                        schedule.id, schedule.fuel_type, schedule.new_price, failed_pumps,
+                    )
+                else:
+                    logger.info(
+                        "Applied scheduled price change %s: %s -> %s",
+                        schedule.id, schedule.fuel_type, schedule.new_price
+                    )
             except Exception as client_err:
                 # PTS-2 inalcanzable: dejar Pending para reintento.
                 logger.warning(

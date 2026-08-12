@@ -23,8 +23,9 @@ import {
   UserCheck,
   Terminal
 } from 'lucide-react';
-import { UserProfile } from '../types';
+import { ShiftAlert, UserProfile } from '../types';
 import type { Permission } from '../permissions';
+import NotificationBell from './NotificationBell';
 
 interface HeaderProps {
   activeTab: string;
@@ -36,6 +37,7 @@ interface HeaderProps {
   onLogout: () => void;
   onQuickSwitchUser: (user: UserProfile) => void;
   can?: (permission: Permission) => boolean;
+  alerts?: ShiftAlert[];
 }
 
 
@@ -56,6 +58,7 @@ export default function Header({
   onLogout,
   onQuickSwitchUser,
   can = () => true,
+  alerts = [],
 }: HeaderProps) {
   const [showUserDropdown, setShowUserDropdown] = useState(false);
 
@@ -147,6 +150,9 @@ export default function Header({
             </button>
           )}
         </div>
+
+        {/* Notification bell */}
+        <NotificationBell alerts={alerts} />
 
         {/* Dynamic User Profile menu & fast switcher */}
         {currentUser && (

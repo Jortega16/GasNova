@@ -23,6 +23,7 @@ import PumpCountersModal from './components/PumpCountersModal';
 import NozzleTransactionsModal from './components/NozzleTransactionsModal';
 import { useSystemSettings } from './hooks/useSystemSettings';
 import { getAuthToken, getStoredAuthUser, setAuthSession, clearAuthSession, UNAUTHORIZED_EVENT } from './auth';
+import Swal from 'sweetalert2';
 import { useVisibilityPolling } from './hooks/useVisibilityPolling';
 import { useLiveState } from './hooks/useLiveState';
 import { usePermissions } from './hooks/usePermissions';
@@ -203,6 +204,8 @@ export default function App() {
   const [tanks, setTanks] = useState<TankState[]>(INITIAL_TANKS);
   // prices / setPrices come from useSystemSettings (defined below)
   const [scheduledPrices, setScheduledPrices] = useState<ScheduledPrice[]>(INITIAL_SCHEDULED_PRICES);
+  const scheduledPricesRef = useRef(scheduledPrices);
+  scheduledPricesRef.current = scheduledPrices;
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [alerts, setAlerts] = useState<ShiftAlert[]>(INITIAL_SHIFTS);
 
@@ -533,6 +536,20 @@ export default function App() {
         setTransactions(uniqueTx);
       }
     });
+  };
+
+  // Abre el modal de confirmación de cierre recargando primero las ventas del
+  // turno desde la BD (fuente de verdad que también usa el backend al
+  // cerrar). El estado local `transactions` se arma con eventos en vivo —
+  // si se perdió alguno (pestaña en segundo plano, reconexión de WS, etc.)
+  // la columna "Sistema" del resumen queda incompleta y nunca se autocorrige
+  // hasta el próximo sync manual. Este recargo evita mostrar un total viejo
+  // justo en el momento en que el operador decide si es seguro cerrar.
+  const openShiftCloseConfirm = () => {
+    if (shiftDetails.shiftId) {
+      reloadShiftTransactions(shiftDetails.shiftId);
+    }
+    setShowShiftCloseConfirm(true);
   };
 
   const reloadPendingAfterConfig = () => {
@@ -970,6 +987,23 @@ export default function App() {
       }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveState.pumps, liveState.tanks, isSimulating, unitMeasure, isPts2Online]);
+
+  // El backend guarda cada UploadPumpTransaction real en pending_transactions
+  // de forma independiente a este navegador (su propio WebSocket al PTS-2,
+  // ver websocket.py) y avisa por /ws/live-state — pero ese socket solo
+  // dispara un refetch de /live/state (estados de bomba), no de
+  // /pumps/pending-transactions. Sin este efecto, un despacho capturado así
+  // (p.ej. este cliente se conectó después de que colgara la manguera, o lo
+  // capturó otra pestaña/terminal) nunca aparece en "Despachos en Pistolera"
+  // para que el operador decida Ticket/Factura/descarga hasta el próximo
+  // mount o sync manual. Se engancha a la misma señal que ya refresca
+  // /live/state (push del WS o el heartbeat de respaldo) para no agregar
+  // un poll aparte.
+  useEffect(() => {
+    if (isSimulating) return;
+    refreshPendingFromDb();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveState.pumps, liveState.tanks, isSimulating]);
 
   const [shiftBrackets, setShiftBrackets] = useState([
     { id: '1', name: 'Turno Matutino', start: '06:00', end: '14:00' },
@@ -2489,33 +2523,55 @@ export default function App() {
           status: item.status as any
         }));
 
-        setScheduledPrices(prev => {
-          mapped.forEach((newSp: any) => {
-            const oldSp = prev.find(p => p.id === newSp.id);
-            if (oldSp && oldSp.status === 'Pending' && newSp.status === 'Applied') {
-              // Update fuel price locally
-              setPrices(currentPrices => currentPrices.map(p => 
-                p.fuelType === newSp.fuelType 
-                  ? { ...p, price: newSp.newPrice, lastUpdated: `Hoy ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` } 
-                  : p
-              ));
+        // Diff puro contra el último snapshot conocido (ref, no el `prev` del
+        // updater de setState): con StrictMode, React invoca la función
+        // pasada a setState dos veces a propósito para detectar efectos
+        // secundarios impuros dentro de ella — si setPrices/setAlerts/Swal
+        // se disparan ahí adentro, se disparan doble. Se calcula el diff
+        // aparte y se aplican los efectos una sola vez, luego se actualiza
+        // el estado con un valor plano (sin función).
+        const previous = scheduledPricesRef.current;
+        const newlyApplied = mapped.filter((newSp: any) => {
+          const oldSp = previous.find(p => p.id === newSp.id);
+          return oldSp && oldSp.status === 'Pending' && newSp.status === 'Applied';
+        });
 
-              // Add a shift alert
-              const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              const newAlert: ShiftAlert = {
-                id: `AL-SCHED-APP-${Math.random()}`,
-                dateTime: `Hoy ${timeStr}`,
-                pumpName: 'SISTEMA',
-                volume: '0.00 Gal',
-                amount: `$0.00`,
-                paymentType: 'Auto',
-                message: `Precio programado aplicado para ${newSp.fuelType}: $${newSp.newPrice.toFixed(2)}/Gal`,
-                isCustomNote: true
-              };
-              setAlerts(currentAlerts => [newAlert, ...currentAlerts]);
-            }
+        setScheduledPrices(mapped);
+
+        newlyApplied.forEach((newSp: any) => {
+          // Update fuel price locally
+          setPrices(currentPrices => currentPrices.map(p =>
+            p.fuelType === newSp.fuelType
+              ? { ...p, price: newSp.newPrice, lastUpdated: `Hoy ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` }
+              : p
+          ));
+
+          // Add a shift alert
+          const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const newAlert: ShiftAlert = {
+            id: `AL-SCHED-APP-${Math.random()}`,
+            dateTime: `Hoy ${timeStr}`,
+            pumpName: 'SISTEMA',
+            volume: '0.00 Gal',
+            amount: `$0.00`,
+            paymentType: 'Auto',
+            message: `Precio programado aplicado para ${newSp.fuelType}: $${newSp.newPrice.toFixed(2)}/Gal`,
+            isCustomNote: true
+          };
+          setAlerts(currentAlerts => [newAlert, ...currentAlerts]);
+
+          Swal.fire({
+            toast: true,
+            position: 'top-end',
+            icon: 'success',
+            title: 'Precio programado aplicado',
+            text: `${newSp.fuelType}: $${newSp.newPrice.toFixed(2)}/Gal`,
+            showConfirmButton: false,
+            timer: 5000,
+            timerProgressBar: true,
+            background: '#0b284e',
+            color: '#ffffff',
           });
-          return mapped;
         });
       }
     }, 3000);
@@ -3487,7 +3543,7 @@ export default function App() {
                   </button>
                   {can('shift.close') && (
                     <button
-                      onClick={() => setShowShiftCloseConfirm(true)}
+                      onClick={openShiftCloseConfirm}
                       className="bg-gradient-to-b from-rose-500 to-rose-700 hover:from-rose-400 hover:to-rose-600 text-white font-sans font-bold text-[11px] py-2 px-3.5 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-lg transition-all"
                       title="Cerrar el turno directamente desde el panel principal"
                     >
@@ -3709,7 +3765,7 @@ export default function App() {
               transactions={transactions}
               alerts={alerts}
               onAddNote={handleAddShiftNote}
-              onCloseShift={() => setShowShiftCloseConfirm(true)}
+              onCloseShift={openShiftCloseConfirm}
               isShiftClosing={isShiftClosing}
               activeDispensingCount={currentlyDispensingCount}
               prices={{
@@ -3905,6 +3961,7 @@ export default function App() {
         onLogout={handleLogout}
         onQuickSwitchUser={handleQuickSwitchInitiate}
         can={can}
+        alerts={alerts}
       />
 
       {/* Primary Context Workspace container */}

@@ -81,16 +81,20 @@ import threading
 logger = logging.getLogger("pts2-ws")
 
 
-def confirmation(packet_id: int):
+def confirmation(packet_id: int, request_type: str | None = None):
+    """Respuesta de confirmación al PTS-2 (jsonPTS "CONFIRMATION/ERROR RESPONSE
+    MESSAGE"): debe repetir el "Type" del paquete original que se está
+    confirmando y usar "Message":"OK" — no un "Type":"Confirmation" genérico
+    con un objeto "Data". El controlador usa esto (junto con "Id") para saber
+    que su Upload* fue recibido y no reintentarlo.
+    """
     return {
         "Protocol": "jsonPTS",
         "Packets": [
             {
                 "Id": packet_id,
-                "Type": "Confirmation",
-                "Data": {
-                    "DateTime": datetime.now(timezone.utc).isoformat()
-                }
+                "Type": request_type or "Confirmation",
+                "Message": "OK",
             }
         ]
     }
@@ -120,20 +124,27 @@ def parse_datetime(dt_str: str | None) -> datetime:
         return datetime.now(timezone.utc)
 
 
-def _auto_close_transaction(websocket: WebSocket, pump_id: int) -> None:
+def _auto_close_transaction(websocket: WebSocket, pump_id: int, transaction: int | None = None) -> None:
     """Envía PumpCloseTransaction al PTS-2 en un hilo separado para no bloquear el WebSocket.
 
     Esto implementa el gap 2: cuando el PTS-2 envía UploadPumpTransaction por WebSocket,
     el backend confirma automáticamente cerrando la transacción vía HTTP, liberando la bomba
     sin necesidad de que el POS lo haga explícitamente.
+
+    jsonPTS §124: PumpCloseTransaction requiere "Transaction" — debe coincidir con el
+    número reportado en PumpEndOfTransactionStatus/UploadPumpTransaction. Antes solo se
+    enviaba "Pump", una solicitud incompleta según el protocolo (podía fallar en
+    silencio y dejar la bomba colgada en EndOfTransaction).
     """
     def _close() -> None:
         try:
             client = websocket.app.state.pts2_client
-            client.request_data("PumpCloseTransaction", {"Pump": pump_id})
-            logger.info("Auto-close PumpCloseTransaction pump=%s", pump_id)
+            # client.pumps.close_transaction() ya arma "Transaction"; si no se
+            # conoce aquí, hace su propio PumpGetStatus como respaldo.
+            client.pumps.close_transaction(pump_id, transaction=transaction)
+            logger.info("Auto-close PumpCloseTransaction pump=%s transaction=%s", pump_id, transaction)
         except Exception as exc:
-            logger.warning("Auto-close falló pump=%s: %s", pump_id, exc)
+            logger.warning("Auto-close falló pump=%s transaction=%s: %s", pump_id, transaction, exc)
 
     threading.Thread(target=_close, daemon=True).start()
 
@@ -216,6 +227,28 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
                     upload_amount,
                     fill.get("fill_seen"),
                 )
+                # Si el PTS reportó volumen/monto real pero no vimos localmente un
+                # PumpFillingStatus (reconexión de WS, reinicio a mitad de despacho),
+                # no lo descartamos en silencio: puede ser una venta real perdida.
+                if no_live_fill and (upload_volume > 0 or upload_amount > 0):
+                    try:
+                        db.add(SystemAlert(
+                            alert_code=0,
+                            alert_type="warning",
+                            description=(
+                                f"Posible venta no registrada en Cara {pump_id_val}: "
+                                f"PTS reportó {upload_volume:.3f} vol / {upload_amount:.2f} monto "
+                                "pero no se detectó despacho localmente (fill_seen=False). "
+                                "Verifique los contadores físicos del surtidor."
+                            ),
+                            device_id=pump_id_val,
+                            alert_time=datetime.now(timezone.utc),
+                            resolved=False,
+                        ))
+                        db.commit()
+                    except Exception as alert_exc:
+                        logger.error("Error saving SystemAlert (venta posiblemente perdida): %s", alert_exc)
+                        db.rollback()
                 live_state.reset_fill_cycle(pump_id_val)
             else:
                 peak_vol = float(fill.get("peak_volume") or 0)
@@ -272,10 +305,15 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
             logger.error("Error saving PendingTransaction: %s", exc)
             db.rollback()
         # Gap 2: cierra la transacción en el PTS-2 automáticamente al recibir UploadPumpTransaction.
-        # El PTS-2 queda en PumpEndOfTransactionStatus hasta que el POS envía PumpCloseTransaction.
-        _auto_close_transaction(websocket, pump_id_val)
+        # El PTS-2 queda en PumpEndOfTransactionStatus hasta que el POS envía PumpCloseTransaction
+        # con el mismo número de "Transaction" (jsonPTS §124) — se toma del propio paquete.
+        try:
+            trx_number = int(transaction) if transaction is not None else None
+        except (TypeError, ValueError):
+            trx_number = None
+        _auto_close_transaction(websocket, pump_id_val, transaction=trx_number)
         await live_broadcaster.notify_changed("UploadPumpTransaction", pump_id_val)
-        await websocket.send_text(json.dumps(confirmation(packet_id)))
+        await websocket.send_text(json.dumps(confirmation(packet_id, packet_type)))
         return
 
     if packet_type == "UploadTankMeasurement":
@@ -300,7 +338,7 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
         # transitorio de base de datos.
         live_state.update_tank(data.get("Tank", 1), data)
         await live_broadcaster.notify_changed("UploadTankMeasurement")
-        await websocket.send_text(json.dumps(confirmation(packet_id)))
+        await websocket.send_text(json.dumps(confirmation(packet_id, packet_type)))
         return
 
     if packet_type == "UploadInTankDelivery":
@@ -318,7 +356,7 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
         except Exception as exc:
             logger.error("Error saving InTankDelivery: %s", exc)
             db.rollback()
-        await websocket.send_text(json.dumps(confirmation(packet_id)))
+        await websocket.send_text(json.dumps(confirmation(packet_id, packet_type)))
         return
 
     if packet_type == "UploadAlertRecord":
@@ -342,7 +380,7 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
         except Exception as exc:
             logger.error("Error saving SystemAlert: %s", exc)
             db.rollback()
-        await websocket.send_text(json.dumps(confirmation(packet_id)))
+        await websocket.send_text(json.dumps(confirmation(packet_id, packet_type)))
         return
 
     if packet_type == "UploadStatus":
@@ -369,14 +407,14 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
                 transaction=data.get("Transaction"),
             )
         await live_broadcaster.notify_changed("UploadStatus", pump_id_val)
-        await websocket.send_text(json.dumps(confirmation(packet_id)))
+        await websocket.send_text(json.dumps(confirmation(packet_id, packet_type)))
         return
 
     if packet_type in {
         "UploadGpsRecord", "UploadPayment", "UploadShift", "UploadConfiguration",
     }:
         logger.info("%s recibido: %s", packet_type, data)
-        await websocket.send_text(json.dumps(confirmation(packet_id)))
+        await websocket.send_text(json.dumps(confirmation(packet_id, packet_type)))
         return
 
     if packet_type == "RequestTagsInformation":
@@ -407,7 +445,7 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
         return
 
     logger.warning("Tipo no manejado: %s", packet_type)
-    await websocket.send_text(json.dumps(confirmation(packet_id)))
+    await websocket.send_text(json.dumps(confirmation(packet_id, packet_type)))
 
 
 @router.websocket("/ptsWebSocket")

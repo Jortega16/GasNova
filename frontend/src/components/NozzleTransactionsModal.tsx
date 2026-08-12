@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Fuel, X, Check, Plus, RefreshCw, FileText, Printer } from 'lucide-react';
+import { Fuel, X, Check, Plus, RefreshCw, FileText, Printer, Download } from 'lucide-react';
 import { DispenserState, PriceConfig, ShiftDetails, UserProfile, FuelType, NozzleTransaction } from '../types';
 import { api, printReceiptWindow } from '../api';
 
@@ -84,6 +84,44 @@ const NozzleTransactionsModal: React.FC<NozzleTransactionsModalProps> = ({
     setInvoiceClientName('');
     setInvoiceClientRuc('');
     onClose();
+  };
+
+  /** Descarga el comprobante como archivo de texto plano (sin depender de la impresora térmica). */
+  const handleDownloadReceipt = () => {
+    if (!billingSuccessDoc) return;
+    const productLabel = fuelType === 'Regular Unleaded' ? 'Regular 90 Oct' : fuelType === 'Premium Unleaded' ? 'Súper 95 Oct' : 'Diesel B5';
+    const lines = [
+      'GASNOVA OUTLET',
+      'R.U.C. 20459871402 - ESTACIÓN CENTRAL',
+      '----------------------------------------',
+      `DOCUMENTO: ${billingSuccessDoc.type === 'invoice' ? 'FACTURA ELECTRÓNICA' : 'BOLETA DE VENTA'}`,
+      `NÚMERO: ${billingSuccessDoc.docNumber}`,
+      ...(billingSuccessDoc.count && billingSuccessDoc.count > 1 ? [`DESPACHOS: ${billingSuccessDoc.count}`] : []),
+      `SURTIDOR: CARA ${dispenserId} - ISLA 1`,
+      `TURNO: ${shiftDetails.shiftId}`,
+      `FECHA: ${billingSuccessDoc.tx.dateTime}`,
+      ...(billingSuccessDoc.type === 'invoice' ? [
+        '----------------------------------------',
+        `CLIENTE: ${billingSuccessDoc.clientName || ''}`,
+        `R.U.C.: ${billingSuccessDoc.clientRuc || ''}`,
+      ] : []),
+      '----------------------------------------',
+      `PRODUCTO: ${productLabel}`,
+      `VOLUMEN: ${billingSuccessDoc.tx.volume.toFixed(3)} Gls`,
+      `TOTAL: ${currencySymbol}${billingSuccessDoc.tx.amount.toFixed(2)}`,
+      '----------------------------------------',
+      'Representación impresa autorizada de comprobante electrónico.',
+      '¡Gracias por su preferencia!',
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${billingSuccessDoc.docNumber}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -369,6 +407,14 @@ const NozzleTransactionsModal: React.FC<NozzleTransactionsModalProps> = ({
                   >
                     <Printer className="w-3.5 h-3.5" />
                     <span>Imprimir</span>
+                  </button>
+                  <button
+                    onClick={handleDownloadReceipt}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer"
+                    title="Descargar comprobante como archivo"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Descargar</span>
                   </button>
                 </div>
               </div>

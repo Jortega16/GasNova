@@ -149,8 +149,25 @@ class PumpsAPI:
         data = self._client.request_data("PumpGetTransactionInformation", {"Pump": pump_id})
         return PumpTransaction.model_validate(data or {"Pump": pump_id})
 
-    def close_transaction(self, pump_id: int) -> Any:
-        return self._client.request_data("PumpCloseTransaction", {"Pump": pump_id})
+    def close_transaction(self, pump_id: int, transaction: int | None = None) -> Any:
+        """Closes the pump's pending transaction.
+
+        Per jsonPTS §124, PumpCloseTransaction requires "Transaction" to match
+        the number reported in PumpEndOfTransactionStatus — a request with only
+        "Pump" is missing a required field. If the caller doesn't already know
+        the transaction number (e.g. it came from an UploadPumpTransaction
+        payload), it's looked up via PumpGetStatus first.
+        """
+        if transaction is None:
+            try:
+                status = self.get_status(pump_id)
+                transaction = status.transaction if isinstance(status.transaction, int) else None
+            except Exception:
+                transaction = None
+        data: dict[str, Any] = {"Pump": pump_id}
+        if transaction is not None:
+            data["Transaction"] = transaction
+        return self._client.request_data("PumpCloseTransaction", data)
 
     def get_display_data(
         self, pump_id: int, timeout: float = 3.0, poll_interval: float = 0.3

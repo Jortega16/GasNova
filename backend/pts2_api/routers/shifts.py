@@ -129,16 +129,23 @@ def close_shift(
     client=Depends(get_pts2_client),
 ) -> CommandResponse:
     """Cierra el turno activo con auditoría de contadores (apertura → cierre)."""
+    # with_for_update(): bloquea la fila hasta que este request haga commit/rollback.
+    # Si dos requests de cierre llegan casi al mismo tiempo (doble clic desde dos
+    # pestañas, reintento tras timeout), el segundo espera a que el primero termine
+    # y al reintentar la lectura ya no encuentra la fila en estado "Active" — evita
+    # crear dos ShiftClosure/turnos nuevos para el mismo cierre. No-op en SQLite
+    # (tests); real en Postgres (producción).
     active_shift = db.query(Shift).filter(
         Shift.shift_id == request.shift_id,
         Shift.status == "Active",
-    ).first()
+    ).with_for_update().first()
 
     if not active_shift:
         active_shift = (
             db.query(Shift)
             .filter(Shift.status == "Active")
             .order_by(Shift.created_at.desc())
+            .with_for_update()
             .first()
         )
 
@@ -179,7 +186,15 @@ def close_shift(
     # 3) Contadores de cierre + enriquecer con apertura
     opening = list(active_shift.opening_counters or [])
     if not opening:
-        opening = _ensure_opening_counters(db, active_shift, client)
+        # No usar _ensure_opening_counters aquí: hace su propio db.commit(), lo
+        # que liberaría el lock de with_for_update() antes de que termine el
+        # cierre. Se captura igual pero se persiste junto al commit final.
+        try:
+            opening = read_all_pump_counters(client, db)
+        except Exception:
+            opening = []
+        if opening:
+            active_shift.opening_counters = opening
 
     try:
         closing = read_all_pump_counters(client, db)
@@ -273,8 +288,16 @@ def close_shift(
     db.refresh(next_shift)
 
     # 5) Cierre definitivo en PTS (después de persistir)
+    # Si en el paso 2 ya se pidió SetClosing:true, el controlador cierra el
+    # turno por sí solo en cuanto terminan los despachos en curso (jsonPTS
+    # §185: "once all the pumps finish the existing fillings the working
+    # shift will be automatically closed by the controller"). Un ShiftClose
+    # sin SetClosing aquí sería la variante inmediata/dura, contradiciendo la
+    # espera que se acaba de pedir. Solo se envía si nunca se pidió el cierre
+    # gradual (request.set_closing == False), como único comando de cierre.
     try:
-        client.request_data("ShiftClose", None)
+        if not request.set_closing:
+            client.request_data("ShiftClose", None)
     except Exception:
         pass
     finally:

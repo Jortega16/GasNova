@@ -184,7 +184,8 @@ export default function ShiftCloseConfirmModal({
   // Payload al confirmar: volumen/monto de CIERRE absolutos (backend calcula delta)
   const closingPayload: Record<number, { vol: number; amt: number }> = {};
   Object.entries(closingCounters).forEach(([id, v]) => {
-    closingPayload[Number(id)] = { vol: v.vol, amt: v.amt };
+    const cv = v as { vol: number; amt: number; ok: boolean };
+    closingPayload[Number(id)] = { vol: cv.vol, amt: cv.amt };
   });
 
   const handleClose = () => { setStep(1); onCancel(); };
