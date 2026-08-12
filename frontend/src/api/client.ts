@@ -141,6 +141,7 @@ export const api = {
     type?: "Volume" | "Amount",
     dose?: number,
     shiftId?: string,
+    price?: number,
   ): Promise<BackendApiResponse> {
     const body: Record<string, unknown> = { nozzle };
     if (type && dose !== undefined) {
@@ -148,6 +149,11 @@ export const api = {
       body.dose = dose;
     }
     if (shiftId) body.shift_id = shiftId;
+    // jsonPTS §116 nota 4: si se omite, el PTS-2 usa el precio configurado en
+    // el grado de combustible — si ese precio no está bien configurado en el
+    // controlador (o está en 0), la autorización puede fallar/rechazarse.
+    // Mandar el precio vigente de GasNova evita depender de esa config.
+    if (price !== undefined && price > 0) body.price = price;
     return apiFetch(`pumps/${pumpId}/authorize`, {
       method: "POST",
       body: JSON.stringify(body),

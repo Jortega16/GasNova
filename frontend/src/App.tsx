@@ -344,12 +344,14 @@ export default function App() {
         }
         return !!res.ok;
       }
+      const fuelPrice = prices.find(p => p.fuelType === auth.fuelType)?.price;
       const res = await api.authorizePump(
         pumpId,
         auth.nozzle,
         auth.limitType,
         auth.dose,
         auth.shiftId,
+        fuelPrice,
       );
       if (res.ok) {
         pendingPtsAuthRef.current.delete(pumpId);
