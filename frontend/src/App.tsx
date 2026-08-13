@@ -363,8 +363,8 @@ export default function App() {
     }
   };
 
-  /** Guarda auth local; el PTS solo se activa al detectar manguera levantada (+ mapeo). */
-  const queuePtsAuth = (pumpId: number, auth: PendingPtsAuth): boolean => {
+  /** Valida mapeo/nozzle antes de encolar o enviar authorize al PTS. */
+  const validatePtsAuth = (pumpId: number, auth: PendingPtsAuth): boolean => {
     if (!pumpConfigLoadedRef.current || !hasPumpMapping(pumpId)) {
       const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       setAlerts(prev => [{
@@ -393,7 +393,31 @@ export default function App() {
       }, ...prev]);
       return false;
     }
+    return true;
+  };
+
+  /** Guarda auth local; se usa como reintento si el envío inmediato falla (p. ej. manguera aún no lista). */
+  const queuePtsAuth = (pumpId: number, auth: PendingPtsAuth): boolean => {
+    if (!validatePtsAuth(pumpId, auth)) return false;
     pendingPtsAuthRef.current.set(pumpId, auth);
+    return true;
+  };
+
+  /**
+   * Prepago (Amount/Volume) y Full: envía PumpAuthorize al PTS-2 de inmediato
+   * al confirmar. Si falla, deja la auth en cola para reintentar al levantar.
+   */
+  const authorizePtsNow = (pumpId: number, auth: PendingPtsAuth): boolean => {
+    if (!validatePtsAuth(pumpId, auth)) return false;
+    // Evita que el poll de live-state dispare un segundo authorize en paralelo
+    ptsAuthScheduledRef.current.add(pumpId);
+    pendingPtsAuthRef.current.delete(pumpId);
+    void sendPtsAuthorize(pumpId, auth).then((ok) => {
+      ptsAuthScheduledRef.current.delete(pumpId);
+      if (!ok) {
+        pendingPtsAuthRef.current.set(pumpId, auth);
+      }
+    });
     return true;
   };
 
@@ -585,10 +609,11 @@ export default function App() {
      *
      * Flujo contado / autoservicio:
      * 1. Reposo              → Idle
-     * 2. Levanta manguera    → Ready  (luego Autoriza → Prepaid)
+     * 2. Levanta manguera    → Ready  (auto-authorize free si está activo)
      * 3. Gatillo / surte     → Dispensing
      * 4. Fin despacho ↑      → EndOfTransaction (totales; aún no cobro)
      * 5. Cuelga manguera     → Idle + venta a pendientes de cobro
+     * Prepago Amount/Volume  → PumpAuthorize al confirmar (no espera levantar)
      *    Sin señal           → Offline
      */
     const mapPts2Status = (statusType: string, nozzleUp: number = 0): PumpStatus => {
@@ -648,8 +673,9 @@ export default function App() {
         const liftedNozzleNumber = liftedRaw === null || liftedRaw === undefined ? 0 : Number(liftedRaw) || 0;
         const pts2Status = mapPts2Status(pumpData.status_type, liftedNozzleNumber);
 
-        // ── Autorizar en PTS SOLO con manguera levantada + mapeo cargado ──
-        // Prepago/postpago se guardan en pendingPtsAuthRef; auto-authorize usa mode free.
+        // ── Autorizar en PTS ──
+        // Prepago Amount/Volume/Full ya se envía al confirmar (authorizePtsNow).
+        // Aquí solo: reintento si falló el envío, o auto-authorize free al levantar.
         if (
           !dispenser.isBlocked &&
           liftedNozzleNumber > 0 &&
@@ -1183,15 +1209,16 @@ export default function App() {
     }
 
     const nozzleNumber = resolveNozzleForPump(preauthorizingPumpId, preauthFuelGrade);
-    const queued = queuePtsAuth(preauthorizingPumpId, {
+    const auth: PendingPtsAuth = {
       nozzle: nozzleNumber,
       fuelType: preauthFuelGrade,
       mode: preauthMode === 'Full' ? 'full' : 'limit',
       limitType: preauthMode === 'Limit' ? preauthLimitType : undefined,
       dose: preauthMode === 'Limit' ? valLimit : undefined,
       shiftId: shiftDetails.shiftId,
-    });
-    if (!queued) return;
+    };
+    const sent = authorizePtsNow(preauthorizingPumpId, auth);
+    if (!sent) return;
 
     setDispensers(prev => prev.map(d => {
       if (d.id === preauthorizingPumpId) {
@@ -1234,7 +1261,7 @@ export default function App() {
       volume: preauthMode === 'Limit' && preauthLimitType === 'Volume' && valLimit ? `${valLimit.toFixed(3)} ${unitMeasure === 'Galones' ? 'Gal' : 'L'}` : '0.000 Gal',
       amount: preauthMode === 'Full' ? 'Tanque Lleno' : (preauthMode === 'Limit' && preauthLimitType === 'Amount' && valLimit ? `$${valLimit.toFixed(2)}` : 'S/L'),
       paymentType: preauthMode === 'Full' ? 'Postpago' : 'Pre-auth',
-      message: `Cara ${preauthorizingPumpId}: ${getModeLabel()} listo — el surtidor se activa al levantar la manguera de ${preauthFuelGrade}`,
+      message: `Cara ${preauthorizingPumpId}: ${getModeLabel()} enviado al PTS-2 — levante la manguera de ${preauthFuelGrade} para surtir`,
       isCustomNote: true
     };
     setAlerts(prev => [authNote, ...prev]);
@@ -4076,15 +4103,16 @@ export default function App() {
           }
 
           const nozzleNumber = resolveNozzleForPump(pumpId, fuelType);
-          const queued = queuePtsAuth(pumpId, {
+          const auth: PendingPtsAuth = {
             nozzle: nozzleNumber,
             fuelType,
             mode: mode === 'Full' ? 'full' : 'limit',
             limitType: mode === 'Limit' ? limitType : undefined,
             dose: mode === 'Limit' ? valLimit : undefined,
             shiftId: shiftDetails.shiftId,
-          });
-          if (!queued) return;
+          };
+          const sent = authorizePtsNow(pumpId, auth);
+          if (!sent) return;
 
           setDispensers(prev => prev.map(d => {
             if (d.id === pumpId) {
@@ -4126,7 +4154,7 @@ export default function App() {
             volume: mode === 'Limit' && limitType === 'Volume' && valLimit ? `${valLimit.toFixed(3)} ${unitMeasure === 'Galones' ? 'Gal' : 'L'}` : '0.000 Gal',
             amount: mode === 'Full' ? 'Tanque Lleno' : (mode === 'Limit' && limitType === 'Amount' && valLimit ? `$${valLimit.toFixed(2)}` : 'S/L'),
             paymentType: mode === 'Full' ? 'Postpago' : 'Pre-auth',
-            message: `Cara ${pumpId}: ${getModeLabel()} listo — el surtidor se activa al levantar la manguera de ${fuelType}`,
+            message: `Cara ${pumpId}: ${getModeLabel()} enviado al PTS-2 — levante la manguera de ${fuelType} para surtir`,
             isCustomNote: true,
           };
           setAlerts(prev => [authNote, ...prev]);
