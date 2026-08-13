@@ -341,6 +341,14 @@ export default function App() {
         if (res.ok) {
           pendingPtsAuthRef.current.delete(pumpId);
           armAuthCooldown(pumpId);
+        } else {
+          // Sin esto, autoFree (autoservicio) reintenta en cada tick de
+          // polling sin ningún freno si el PTS-2 sigue rechazando/timeouteando
+          // — no depende de pendingPtsAuthRef como el flujo con preset, así
+          // que nada más lo frena. Cooldown más largo que en éxito para no
+          // bombardear un controlador que ya está fallando.
+          console.warn(`[auth] postpay-authorize falló para cara ${pumpId}: ${res.error}`);
+          armAuthCooldown(pumpId, 10000);
         }
         return !!res.ok;
       }
@@ -356,6 +364,12 @@ export default function App() {
       if (res.ok) {
         pendingPtsAuthRef.current.delete(pumpId);
         armAuthCooldown(pumpId);
+      } else {
+        // Mismo freno para el flujo con preset: aunque este SÍ tiene límite de
+        // reintentos vía pendingPtsAuthRef (ver más abajo), sin cooldown cada
+        // intento fallido se dispara en el siguiente tick de polling casi
+        // inmediatamente.
+        armAuthCooldown(pumpId, 10000);
       }
       return !!res.ok;
     } finally {
