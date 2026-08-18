@@ -400,8 +400,12 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
         # (precio activo), no el arreglo completo de NozzlePrices — por eso
         # no se pasa nozzle_prices aquí y update_pump conserva el último
         # arreglo completo que sí llegó por sondeo (ver live_state.py).
-        pump_id_val = data.get("Pump")
-        if pump_id_val is not None:
+        last_pump_id: int | None = None
+
+        if data.get("Pump") is not None:
+            # Forma plana (algún firmware/config la manda así): un solo pump
+            # por paquete, campos sueltos "Pump"/"Status"/"Nozzle"/etc.
+            pump_id_val = data.get("Pump")
             raw_nozzle = data.get("Nozzle")
             if raw_nozzle is None:
                 raw_nozzle = data.get("NozzleUp")
@@ -417,7 +421,68 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
                 amount=data.get("Amount"),
                 transaction=data.get("Transaction"),
             )
-        await live_broadcaster.notify_changed("UploadStatus", pump_id_val)
+            last_pump_id = pump_id_val
+        else:
+            # Forma real observada en campo: "Pumps" agrupa TODAS las bombas
+            # por categoría de estado (FillingStatus/IdleStatus/
+            # EndOfTransactionStatus/OfflineStatus), cada una con arreglos
+            # paralelos indexados por posición (Ids[i] <-> Nozzles[i] <->
+            # Volumes[i] <-> ...). Sin este parseo, ninguna bomba pasaba por
+            # aquí con status_type="PumpFillingStatus" — fill_seen quedaba
+            # SIEMPRE False y UploadPumpTransaction descartaba toda venta real
+            # como "sin despacho real", forzando a depender del respaldo más
+            # lento (capture al detectar colgada desde el frontend).
+            pumps = data.get("Pumps") or {}
+
+            def _at(arr: Any, i: int) -> Any:
+                try:
+                    return arr[i]
+                except (TypeError, IndexError):
+                    return None
+
+            filling = pumps.get("FillingStatus") or {}
+            for i, pid in enumerate(filling.get("Ids") or []):
+                live_state.update_pump(
+                    pid,
+                    status_type="PumpFillingStatus",
+                    nozzle=_at(filling.get("Nozzles"), i),
+                    volume=_at(filling.get("Volumes"), i),
+                    amount=_at(filling.get("Amounts"), i),
+                    transaction=_at(filling.get("Transactions"), i),
+                )
+                last_pump_id = pid
+
+            eot = pumps.get("EndOfTransactionStatus") or {}
+            for i, pid in enumerate(eot.get("Ids") or []):
+                live_state.update_pump(
+                    pid,
+                    status_type="PumpEndOfTransactionStatus",
+                    nozzle=_at(eot.get("Nozzles"), i),
+                    volume=_at(eot.get("Volumes"), i),
+                    amount=_at(eot.get("Amounts"), i),
+                    transaction=_at(eot.get("Transactions"), i),
+                )
+                last_pump_id = pid
+
+            idle = pumps.get("IdleStatus") or {}
+            for i, pid in enumerate(idle.get("Ids") or []):
+                nozzle_up = _at(idle.get("NozzlesUp"), i) or 0
+                live_state.update_pump(
+                    pid,
+                    status_type="PumpIdleStatus",
+                    nozzle=nozzle_up or _at(idle.get("LastNozzles"), i),
+                    volume=_at(idle.get("LastVolumes"), i),
+                    amount=_at(idle.get("LastAmounts"), i),
+                    transaction=_at(idle.get("LastTransactions"), i),
+                )
+                last_pump_id = pid
+
+            offline = pumps.get("OfflineStatus") or {}
+            for pid in offline.get("Ids") or []:
+                live_state.update_pump(pid, status_type="PumpOfflineStatus")
+                last_pump_id = pid
+
+        await live_broadcaster.notify_changed("UploadStatus", last_pump_id)
         await websocket.send_text(json.dumps(confirmation(packet_id, packet_type)))
         return
 

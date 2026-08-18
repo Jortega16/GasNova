@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from fastapi import APIRouter, Depends, Path, Query, HTTPException, Request, status
@@ -39,6 +40,28 @@ router = APIRouter(prefix="/pumps", tags=["pumps"])
 
 # Número de bombas a consultar (se puede configurar en settings más adelante)
 _DEFAULT_PUMP_COUNT = 8
+
+# Serializa capture_pending_transaction_from_pts() por bomba: el controlador
+# PTS-2 (servidor HTTP embebido) se satura cuando le llegan varias
+# GetTransactionInformation simultáneas para la misma bomba — múltiples
+# pestañas/clientes del dashboard disparan su propia captura al detectar el
+# mismo fin de despacho, y cada una golpea al PTS-2 por su cuenta. El
+# controlador responde con timeouts/reintentos de varios segundos cada uno,
+# retrasando el guardado real de la venta hasta 30-40s. Con este lock, si ya
+# hay una captura en curso para esa bomba, las peticiones concurrentes no
+# repiten la llamada al PTS-2 — esperan a que termine y comparten el mismo
+# resultado, así solo una request golpea el equipo físico a la vez.
+_capture_locks: dict[int, threading.Lock] = {}
+_capture_locks_guard = threading.Lock()
+
+
+def _get_capture_lock(pump_id: int) -> threading.Lock:
+    with _capture_locks_guard:
+        lock = _capture_locks.get(pump_id)
+        if lock is None:
+            lock = threading.Lock()
+            _capture_locks[pump_id] = lock
+        return lock
 
 
 def _close(client: PTS2Client) -> None:
@@ -186,8 +209,6 @@ def authorize(
         auth_shifts[pump_id] = shift_at_auth
         req.app.state.pump_auth_shifts = auth_shifts
 
-    live_state.reset_fill_cycle(pump_id)
-
     try:
         pts_data: dict[str, Any] = {"Pump": pump_id}
         if request.nozzle is not None:
@@ -207,6 +228,15 @@ def authorize(
             data = client.pumps.authorize_free(pump_id, nozzle=request.nozzle)
         else:
             data = client.request_data("PumpAuthorize", pts_data)
+        # Recién aquí, con el PTS-2 confirmando que aceptó — reiniciar el
+        # fill_cycle antes (como estaba) borraba el fill_seen/peak_volume ya
+        # acumulados de un despacho REAL en curso cada vez que un intento
+        # duplicado (p.ej. el doble-invoke de React StrictMode) llegaba a
+        # mitad del despacho y el PTS-2 lo rechazaba (Code 40, PUMP_BUSY):
+        # el rechazo igual pasaba por este reset antes de saber que había
+        # fallado, dejando cada venta real marcada luego como "sin despacho
+        # real" en UploadPumpTransaction.
+        live_state.reset_fill_cycle(pump_id)
         return CommandResponse(data=data)
     finally:
         _close(client)
@@ -502,10 +532,12 @@ def postpay_authorize(
         auth_shifts[pump_id] = shift_at_auth
         req.app.state.pump_auth_shifts = auth_shifts
 
-    live_state.reset_fill_cycle(pump_id)
-
     try:
         data = client.pumps.authorize_free(pump_id, nozzle=request.nozzle)
+        # Ver comentario en authorize(): resetear solo tras confirmación del
+        # PTS-2, no antes — un intento duplicado rechazado por BUSY no debe
+        # borrar el progreso de un despacho real ya en curso.
+        live_state.reset_fill_cycle(pump_id)
         return CommandResponse(data={"status": "Authorized", "mode": "Postpay", "detail": data})
     finally:
         _close(client)
@@ -962,99 +994,111 @@ def capture_pending_transaction_from_pts(
     client: PTS2Client = Depends(get_pts2_client),
     db: Session = Depends(get_db),
 ) -> CommandResponse:
-    """Captura la última transacción del PTS-2 y la deja en pending_transactions."""
-    try:
-        transaction = client.pumps.get_transaction_information(pump_id)
-        data = transaction.model_dump(by_alias=True, exclude_none=True)
-    finally:
-        _close(client)
+    """Captura la última transacción del PTS-2 y la deja en pending_transactions.
 
-    trx_id = str(
-        data.get("Transaction")
-        or data.get("TransactionId")
-        or data.get("LastTransaction")
-        or f"{pump_id}-{data.get('DateTime') or data.get('LastDateTime') or 'pending'}"
-    )
-
-    # No hubo despacho real (manguera levantada y colgada sin surtir combustible):
-    # no crear una "venta" fantasma. GetTransactionInformation a menudo devuelve
-    # la trx ANTERIOR (LastVolume/LastAmount), así que también exigimos pico de
-    # Filling observado desde la última autorización.
-    captured_volume = float(data.get("Volume") or data.get("LastVolume") or 0)
-    captured_amount = float(data.get("Amount") or data.get("LastAmount") or 0)
-    fill = live_state.get_fill_cycle(pump_id)
-    no_live_fill = not fill.get("fill_seen") and float(fill.get("peak_volume") or 0) <= 0 and float(fill.get("peak_amount") or 0) <= 0
-    if (captured_volume <= 0 and captured_amount <= 0) or no_live_fill:
-        live_state.reset_fill_cycle(pump_id)
-        return CommandResponse(data={
-            "created": False,
-            "skipped": True,
-            "message": "Sin despacho real (solo levantó/bajó manguera) — no se registró como venta.",
-            "trx_id": trx_id,
-            "volume": 0.0,
-            "amount": 0.0,
-        })
-
-    # Preferir pico live si GetTransactionInformation trajo totales viejos
-    peak_vol = float(fill.get("peak_volume") or 0)
-    peak_amt = float(fill.get("peak_amount") or 0)
-    if peak_vol > 0:
-        captured_volume = peak_vol
-    if peak_amt > 0:
-        captured_amount = peak_amt
-
-    # Si el PTS solo mandó monto (Volume=0), derivar litraje con precio unitario
-    unit_price = resolve_unit_price(data)
-    if unit_price is None:
-        snap = live_state.get_all_pumps(max_age_seconds=60.0).get(pump_id) or {}
-        prices = snap.get("nozzle_prices") or []
-        nz = data.get("Nozzle") or data.get("LastNozzle") or snap.get("nozzle")
+    Serializada por bomba (`_get_capture_lock`): varias pestañas/clientes
+    detectan el mismo fin de despacho casi al mismo tiempo y cada una
+    dispara su propia captura — sin el lock, todas golpean el servidor HTTP
+    embebido del PTS-2 (GetTransactionInformation) a la vez, y ese equipo se
+    satura y responde con timeouts/reintentos de varios segundos cada uno,
+    retrasando el guardado real de la venta hasta 30-40s. Con el lock, la
+    segunda request en adelante espera a que la primera termine, encuentra
+    la fila ya insertada (upsert_pending_transaction es idempotente por
+    trx_id) y responde de inmediato sin volver a llamar al PTS-2.
+    """
+    with _get_capture_lock(pump_id):
         try:
-            nz_i = int(nz) if nz is not None else 0
-        except (TypeError, ValueError):
-            nz_i = 0
-        if nz_i > 0 and prices and 0 <= (nz_i - 1) < len(prices):
-            unit_price = float(prices[nz_i - 1] or 0) or None
-    captured_volume = derive_volume(captured_volume, captured_amount, unit_price)
+            transaction = client.pumps.get_transaction_information(pump_id)
+            data = transaction.model_dump(by_alias=True, exclude_none=True)
+        finally:
+            _close(client)
 
-    # Tras derivar: aún sin monto o volumen → no crear venta $0.00
-    if is_zero_sale(captured_volume, captured_amount):
+        trx_id = str(
+            data.get("Transaction")
+            or data.get("TransactionId")
+            or data.get("LastTransaction")
+            or f"{pump_id}-{data.get('DateTime') or data.get('LastDateTime') or 'pending'}"
+        )
+
+        # No hubo despacho real (manguera levantada y colgada sin surtir combustible):
+        # no crear una "venta" fantasma. GetTransactionInformation a menudo devuelve
+        # la trx ANTERIOR (LastVolume/LastAmount), así que también exigimos pico de
+        # Filling observado desde la última autorización.
+        captured_volume = float(data.get("Volume") or data.get("LastVolume") or 0)
+        captured_amount = float(data.get("Amount") or data.get("LastAmount") or 0)
+        fill = live_state.get_fill_cycle(pump_id)
+        no_live_fill = not fill.get("fill_seen") and float(fill.get("peak_volume") or 0) <= 0 and float(fill.get("peak_amount") or 0) <= 0
+        if (captured_volume <= 0 and captured_amount <= 0) or no_live_fill:
+            live_state.reset_fill_cycle(pump_id)
+            return CommandResponse(data={
+                "created": False,
+                "skipped": True,
+                "message": "Sin despacho real (solo levantó/bajó manguera) — no se registró como venta.",
+                "trx_id": trx_id,
+                "volume": 0.0,
+                "amount": 0.0,
+            })
+
+        # Preferir pico live si GetTransactionInformation trajo totales viejos
+        peak_vol = float(fill.get("peak_volume") or 0)
+        peak_amt = float(fill.get("peak_amount") or 0)
+        if peak_vol > 0:
+            captured_volume = peak_vol
+        if peak_amt > 0:
+            captured_amount = peak_amt
+
+        # Si el PTS solo mandó monto (Volume=0), derivar litraje con precio unitario
+        unit_price = resolve_unit_price(data)
+        if unit_price is None:
+            snap = live_state.get_all_pumps(max_age_seconds=60.0).get(pump_id) or {}
+            prices = snap.get("nozzle_prices") or []
+            nz = data.get("Nozzle") or data.get("LastNozzle") or snap.get("nozzle")
+            try:
+                nz_i = int(nz) if nz is not None else 0
+            except (TypeError, ValueError):
+                nz_i = 0
+            if nz_i > 0 and prices and 0 <= (nz_i - 1) < len(prices):
+                unit_price = float(prices[nz_i - 1] or 0) or None
+        captured_volume = derive_volume(captured_volume, captured_amount, unit_price)
+
+        # Tras derivar: aún sin monto o volumen → no crear venta $0.00
+        if is_zero_sale(captured_volume, captured_amount):
+            live_state.reset_fill_cycle(pump_id)
+            return CommandResponse(data={
+                "created": False,
+                "skipped": True,
+                "message": "Sin despacho real (monto o volumen en cero) — no se registró como venta.",
+                "trx_id": trx_id,
+                "volume": float(captured_volume or 0),
+                "amount": float(captured_amount or 0),
+            })
+
+        # Recupera el shift capturado en el momento de la autorización (gap #4).
+        auth_shifts: dict = getattr(req.app.state, "pump_auth_shifts", {})
+        auth_shift_id: str | None = auth_shifts.pop(pump_id, None)
+        req.app.state.pump_auth_shifts = auth_shifts
+
+        pending, created = upsert_pending_transaction(
+            db,
+            pump_id=pump_id,
+            trx_id=trx_id,
+            nozzle=data.get("Nozzle") or data.get("LastNozzle"),
+            volume=captured_volume,
+            amount=captured_amount,
+            fuel_type=data.get("FuelGradeName") or data.get("Product") or data.get("LastFuelGradeName"),
+            pts_transaction_id=trx_id,
+            raw_payload=data,
+            started_at=data.get("DateTimeStart") or data.get("DateTime"),
+            completed_at=data.get("DateTimeEnd") or data.get("LastDateTime"),
+            station_code=str(data.get("Station") or data.get("StationCode") or "") or None,
+            pos_terminal_code=str(data.get("Terminal") or data.get("PosTerminalCode") or "") or None,
+            shift_id=auth_shift_id,
+        )
         live_state.reset_fill_cycle(pump_id)
-        return CommandResponse(data={
-            "created": False,
-            "skipped": True,
-            "message": "Sin despacho real (monto o volumen en cero) — no se registró como venta.",
-            "trx_id": trx_id,
-            "volume": float(captured_volume or 0),
-            "amount": float(captured_amount or 0),
-        })
-
-    # Recupera el shift capturado en el momento de la autorización (gap #4).
-    auth_shifts: dict = getattr(req.app.state, "pump_auth_shifts", {})
-    auth_shift_id: str | None = auth_shifts.pop(pump_id, None)
-    req.app.state.pump_auth_shifts = auth_shifts
-
-    pending, created = upsert_pending_transaction(
-        db,
-        pump_id=pump_id,
-        trx_id=trx_id,
-        nozzle=data.get("Nozzle") or data.get("LastNozzle"),
-        volume=captured_volume,
-        amount=captured_amount,
-        fuel_type=data.get("FuelGradeName") or data.get("Product") or data.get("LastFuelGradeName"),
-        pts_transaction_id=trx_id,
-        raw_payload=data,
-        started_at=data.get("DateTimeStart") or data.get("DateTime"),
-        completed_at=data.get("DateTimeEnd") or data.get("LastDateTime"),
-        station_code=str(data.get("Station") or data.get("StationCode") or "") or None,
-        pos_terminal_code=str(data.get("Terminal") or data.get("PosTerminalCode") or "") or None,
-        shift_id=auth_shift_id,
-    )
-    live_state.reset_fill_cycle(pump_id)
-    response = serialize_pending_transaction(pending)
-    response["created"] = created
-    response["source"] = "PTS-2"
-    return CommandResponse(data=response)
+        response = serialize_pending_transaction(pending)
+        response["created"] = created
+        response["source"] = "PTS-2"
+        return CommandResponse(data=response)
 
 
 @router.post(
