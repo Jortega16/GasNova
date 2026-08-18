@@ -121,7 +121,7 @@ export default function LoginScreen({ users, onLoginSuccess }: LoginScreenProps)
               </div>
               <div>
                 <p className="font-sans font-black text-xl tracking-tight leading-none bg-gradient-to-r from-orange-400 via-white to-red-400 bg-clip-text text-transparent">GASNOVA</p>
-                <p className="text-[10px] text-[#87a0cd] font-mono tracking-wider uppercase mt-1">Control POS de Estación v5.2</p>
+                <p className="text-[10px] text-[#87a0cd] font-mono tracking-wider uppercase mt-1">Control POS de Estación v{(import.meta as any).env?.VITE_APP_VERSION || '—'}</p>
               </div>
             </div>
 

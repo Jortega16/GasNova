@@ -5,6 +5,17 @@ RUN apt-get update && apt-get install -y cups-client cups-bsd && rm -rf /var/lib
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# Commit corto y fecha de build, inyectados desde afuera (docker compose build
+# --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) --build-arg
+# BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)). Sin argumento, quedan en
+# "unknown" — así /version siempre responde algo, nunca falla por faltar esto.
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ARG APP_VERSION=unknown
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV BUILD_TIME=$BUILD_TIME
+ENV APP_VERSION=$APP_VERSION
+
 WORKDIR /app
 
 COPY pyproject.toml requirements.txt run_backend.bat alembic.ini ./

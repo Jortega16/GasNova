@@ -95,6 +95,11 @@ export const api = {
     return { apiConnected: false, pts2Connected: false };
   },
 
+  /** Commit de git y fecha de build de la imagen del backend que está corriendo ahora. */
+  async getVersion(): Promise<BackendApiResponse<{ commit: string; built_at: string }>> {
+    return apiFetch("version");
+  },
+
   async getPumpStatus(
     pumpId: number,
   ): Promise<{ ok: boolean; status?: BackendPumpStatus; error?: string }> {

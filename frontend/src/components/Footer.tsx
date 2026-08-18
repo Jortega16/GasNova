@@ -4,7 +4,8 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Wifi, RefreshCw, Clock, AlertTriangle, Play, Pause } from 'lucide-react';
+import { Wifi, RefreshCw, Clock, AlertTriangle, Play, Pause, Tag } from 'lucide-react';
+import { api } from '../api';
 
 interface FooterProps {
   shiftId: string;
@@ -32,6 +33,22 @@ export default function Footer({
   const [lastSyncTime, setLastSyncTime] = useState<string>('10:31 AM');
   const [syncing, setSyncing] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<string>('');
+
+  // Versión desplegada: V X.Y.Z (fuente única: archivo VERSION en la raíz del
+  // repo, ver docker-compose.dev.yml) + commit/fecha del build del frontend
+  // (horneado por Vite en build time) vs. lo que el backend reporta en
+  // /version ahora mismo — si el commit no coincide, alguno de los dos
+  // quedó con un deploy viejo.
+  const appVersion = (import.meta as any).env?.VITE_APP_VERSION || 'unknown';
+  const frontendCommit = (import.meta as any).env?.VITE_GIT_COMMIT || 'unknown';
+  const frontendBuiltAt = (import.meta as any).env?.VITE_BUILD_TIME || 'unknown';
+  const [backendVersion, setBackendVersion] = useState<{ version: string; commit: string; built_at: string } | null>(null);
+
+  useEffect(() => {
+    api.getVersion().then((res) => {
+      if (res.ok && res.data) setBackendVersion(res.data);
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     // Update local clock format
@@ -164,6 +181,39 @@ export default function Footer({
           <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
           <span>{syncing ? 'Sincronizando...' : 'Sincronizar'}</span>
         </button>
+
+        <div className="h-4 w-px bg-[#44474e]" />
+
+        {(() => {
+          const mismatch = !!(
+            backendVersion &&
+            frontendCommit !== 'unknown' &&
+            backendVersion.commit !== 'unknown' &&
+            backendVersion.commit !== frontendCommit
+          );
+          const title = [
+            `Frontend: V${appVersion} — commit ${frontendCommit} (build ${frontendBuiltAt})`,
+            backendVersion
+              ? `Backend: V${backendVersion.version} — commit ${backendVersion.commit} (build ${backendVersion.built_at})`
+              : 'Backend: consultando…',
+            mismatch ? '⚠️ Frontend y backend NO están en el mismo commit — probablemente falta redesplegar uno de los dos.' : '',
+          ].filter(Boolean).join('\n');
+          return (
+            <div
+              className={`flex items-center gap-1 text-[10px] font-mono px-2 py-1 rounded border ${
+                mismatch
+                  ? 'bg-amber-950/60 border-amber-700 text-amber-300'
+                  : 'bg-[#2d3133] border-[#44474e]/50 text-[#87a0cd]'
+              }`}
+              id="version-badge"
+              title={title}
+            >
+              <Tag className="w-3 h-3" />
+              <span className="font-bold">V{appVersion}</span>
+              {mismatch && <AlertTriangle className="w-3 h-3 text-amber-400 ml-0.5" />}
+            </div>
+          );
+        })()}
 
         <div className="h-4 w-px bg-[#44474e]" />
 

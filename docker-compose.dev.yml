@@ -1,17 +1,30 @@
 # Override para desarrollo: construye las imágenes desde el código fuente local
 # en lugar de descargarlas de ghcr.io.
 #
-# Uso: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
+# Uso: GIT_COMMIT=$(git rev-parse --short HEAD) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+#      APP_VERSION=$(cat VERSION) \
+#      docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
+# (sin exportar esas variables, quedan como "unknown" — ver Dockerfile de cada lado)
+# APP_VERSION viene del archivo VERSION en la raíz del repo — es la fuente
+# única de verdad del número "V X.Y.Z" que se ve en el pie de página.
 
 services:
   gasnova-backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        APP_VERSION: ${APP_VERSION:-unknown}
     image: gasnova-backend:dev
 
   gasnova-frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        APP_VERSION: ${APP_VERSION:-unknown}
     image: gasnova-frontend:dev

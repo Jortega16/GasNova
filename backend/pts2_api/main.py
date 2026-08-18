@@ -147,6 +147,7 @@ def create_app() -> FastAPI:
     _PUBLIC_EXACT = {
         ("GET", "/"),
         ("GET", "/health"),
+        ("GET", "/version"),
         ("GET", "/docs"),
         ("GET", "/openapi.json"),
         ("GET", "/redoc"),

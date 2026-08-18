@@ -126,7 +126,7 @@ export default function Header({
           </div>
           <div>
             <span className="font-sans font-extrabold tracking-tight text-xl block leading-tight bg-gradient-to-r from-sky-400 via-white to-amber-400 bg-clip-text text-transparent">GASNOVA</span>
-            <span className="text-[10px] uppercase font-mono tracking-widest text-[#87a0cd] block">Operations POS v5.0</span>
+            <span className="text-[10px] uppercase font-mono tracking-widest text-[#87a0cd] block">Operations POS v{(import.meta as any).env?.VITE_APP_VERSION || '—'}</span>
           </div>
         </div>
 
