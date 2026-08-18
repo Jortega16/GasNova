@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from pts2_sdk import PTS2Client
 
@@ -454,5 +454,175 @@ def full_setup(
         )
 
         return CommandResponse(data=results)
+    finally:
+        _close(client)
+
+
+# ─── Endpoints — Canal de datos en vivo (RemoteServerConfiguration) ─────────
+
+class SetLiveRefreshRateRequest(BaseModel):
+    websockets_period_seconds: int = Field(
+        ge=1, le=3600,
+        description=(
+            "'WebsocketsUploadStatusRequestsPeriodSeconds' (jsonPTS): cada cuánto el "
+            "PTS-2 empuja UploadStatus (Volume/Amount en vivo de un despacho) por "
+            "WebSocket. Bajarlo refresca el monto y litraje en pantalla más rápido."
+        ),
+    )
+    http_period_seconds: int | None = Field(
+        default=None, ge=1, le=3600,
+        description=(
+            "'UploadStatusRequestsPeriodSeconds': mismo período pero para el canal "
+            "HTTP de respaldo (no-WebSocket). Opcional — solo aplica si el "
+            "controlador tiene ese canal habilitado además del WebSocket."
+        ),
+    )
+
+
+class SetRemoteServerConnectionRequest(BaseModel):
+    ip_address: str | None = Field(
+        default=None,
+        description=(
+            "IP del servidor GasNova (backend/nginx) en formato 'a.b.c.d', alcanzable "
+            "desde la red del PTS-2. Se traduce a 'IpAddress' (lista de 4 octetos). "
+            "Deja vacío si usas 'domain_name' en su lugar."
+        ),
+    )
+    domain_name: str | None = Field(
+        default=None,
+        description=(
+            "Dominio del servidor GasNova, en vez de IP fija ('DomainName'). Si se "
+            "envía, 'ip_address' se limpia a 0.0.0.0 (el protocolo usa uno u otro)."
+        ),
+    )
+    websockets_port: int = Field(
+        ge=1, le=65535,
+        description=(
+            "'WebsocketsPort': puerto donde el PTS-2 debe abrir el WebSocket saliente. "
+            "Usar 80/443 si nginx está levantado (proxy con headers de upgrade en "
+            "frontend/nginx.conf); si solo corre el backend suelto, usar su puerto "
+            "expuesto por Docker (p.ej. 8002)."
+        ),
+    )
+    websockets_uri: str = Field(
+        default="ptsWebSocket",
+        description="'WebsocketsUri': ruta del WebSocket. Coincide con /ptsWebSocket del backend.",
+    )
+    use_websockets_communication: bool = Field(
+        default=True,
+        description="'UseWebsocketsCommunication': habilita el canal WebSocket saliente del PTS-2.",
+    )
+
+    @field_validator("ip_address")
+    @classmethod
+    def _validate_ip(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        parts = value.split(".")
+        if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            raise ValueError("ip_address debe tener formato 'a.b.c.d' con octetos 0-255")
+        return value
+
+
+@router.get(
+    "/remote-server",
+    response_model=CommandResponse,
+    summary="Leer configuración del canal de datos (GetRemoteServerConfiguration)",
+    description=(
+        "Retorna la configuración completa de conexión al servidor remoto, incluyendo "
+        "los períodos de empuje de estado en vivo por WebSocket/HTTP. "
+        "Equivale al comando **GetRemoteServerConfiguration** del protocolo jsonPTS (cmd #35)."
+    ),
+)
+def get_remote_server_configuration(client: PTS2Client = Depends(get_pts2_client)) -> CommandResponse:
+    try:
+        data = client.request_data("GetRemoteServerConfiguration", None)
+        return CommandResponse(data=data)
+    finally:
+        _close(client)
+
+
+@router.put(
+    "/remote-server/refresh-rate",
+    response_model=CommandResponse,
+    summary="Ajustar la frecuencia de refresco en vivo (monto/litraje durante un despacho)",
+    description=(
+        "Cambia únicamente 'WebsocketsUploadStatusRequestsPeriodSeconds' (y opcionalmente "
+        "su equivalente HTTP), dejando el resto de la configuración del canal remoto "
+        "intacta: primero lee la configuración vigente (**GetRemoteServerConfiguration**) "
+        "y la reenvía completa con solo esos campos cambiados (**SetRemoteServerConfiguration**, "
+        "cmd #36) — mandar el período suelto sin el resto de campos borraría URIs y flags "
+        "de subida ya configurados en el controlador. Rango válido: 1–3600 segundos."
+    ),
+)
+def set_live_refresh_rate(
+    request: SetLiveRefreshRateRequest,
+    client: PTS2Client = Depends(get_pts2_client),
+) -> CommandResponse:
+    try:
+        current = client.request_data("GetRemoteServerConfiguration", None)
+        payload: dict[str, Any] = dict(current) if isinstance(current, dict) else {}
+        payload["WebsocketsUploadStatusRequestsPeriodSeconds"] = request.websockets_period_seconds
+        if request.http_period_seconds is not None:
+            payload["UploadStatusRequestsPeriodSeconds"] = request.http_period_seconds
+        data = client.request_data("SetRemoteServerConfiguration", payload)
+        return CommandResponse(data={
+            "applied": data,
+            "websockets_period_seconds": request.websockets_period_seconds,
+            "http_period_seconds": request.http_period_seconds,
+        })
+    finally:
+        _close(client)
+
+
+@router.put(
+    "/remote-server/connection",
+    response_model=CommandResponse,
+    summary="Configurar a dónde/cómo se conecta el PTS-2 por WebSocket (push en vivo)",
+    description=(
+        "Cambia 'IpAddress'/'DomainName'/'WebsocketsPort'/'WebsocketsUri'/"
+        "'UseWebsocketsCommunication', dejando el resto de la configuración del canal "
+        "remoto intacta (read-merge-write igual que /refresh-rate). Sin un destino "
+        "válido aquí, el PTS-2 nunca abre el WebSocket entrante — el sistema queda "
+        "funcionando solo con el heartbeat de polling (hasta 10s de retraso en vez "
+        "de push instantáneo). Responde con 'IsWebsocketsCommunicationSuccessful' / "
+        "'IsConnectionSuccessful' del propio PTS-2 tras aplicar, para verificar en el momento."
+    ),
+)
+def set_remote_server_connection(
+    request: SetRemoteServerConnectionRequest,
+    client: PTS2Client = Depends(get_pts2_client),
+) -> CommandResponse:
+    try:
+        current = client.request_data("GetRemoteServerConfiguration", None)
+        payload: dict[str, Any] = dict(current) if isinstance(current, dict) else {}
+
+        if request.domain_name:
+            payload["DomainName"] = request.domain_name
+            payload["IpAddress"] = [0, 0, 0, 0]
+        elif request.ip_address:
+            payload["IpAddress"] = [int(p) for p in request.ip_address.split(".")]
+            payload["DomainName"] = ""
+
+        payload["WebsocketsPort"] = request.websockets_port
+        payload["WebsocketsUri"] = request.websockets_uri
+        payload["UseWebsocketsCommunication"] = request.use_websockets_communication
+
+        client.request_data("SetRemoteServerConfiguration", payload)
+        verify = client.request_data("GetRemoteServerConfiguration", None)
+        return CommandResponse(data={
+            "applied": {
+                "ip_address": request.ip_address,
+                "domain_name": request.domain_name,
+                "websockets_port": request.websockets_port,
+                "websockets_uri": request.websockets_uri,
+            },
+            "is_websockets_communication_successful": (
+                verify.get("IsWebsocketsCommunicationSuccessful") if isinstance(verify, dict) else None
+            ),
+            "is_connection_successful": (
+                verify.get("IsConnectionSuccessful") if isinstance(verify, dict) else None
+            ),
+        })
     finally:
         _close(client)

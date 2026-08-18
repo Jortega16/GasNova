@@ -33,6 +33,11 @@ services:
       # - /var/run/cups/cups.sock:/var/run/cups/cups.sock
     ports:
       - "8002:8000"
+      # 8083: puerto dedicado para el WebSocket del PTS-2 (convención de
+      # producción: 8082 API / 8083 WS, para no compartir puerto). Mismo
+      # contenedor/puerto interno 8000 — solo se publica también aquí para
+      # que el PTS-2 tenga un destino separado de la API.
+      - "8083:8000"
     depends_on:
       gasnova-db:
         condition: service_healthy

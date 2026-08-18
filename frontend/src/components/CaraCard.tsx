@@ -13,6 +13,8 @@ import { DispenserState, FuelType, NozzleState, PaymentMethod } from '../types';
 interface CaraCardProps {
   key?: any;
   dispenser: DispenserState;
+  /** Preset/prepago recién enviado al PTS-2, esperando confirmación (badge temporal). */
+  isRecentlyProgrammed?: boolean;
   onPreAuthorize: (dispenserId: number, fuelType: FuelType) => void;
   onStartFueling: (dispenserId: number, fuelType: FuelType) => void;
   onEmergencyStop: (dispenserId: number, fuelType: FuelType) => void;
@@ -115,6 +117,7 @@ const CARD_STATE = {
 
 export default function CaraCard({
   dispenser,
+  isRecentlyProgrammed = false,
   onPreAuthorize,
   onStartFueling,
   onEmergencyStop,
@@ -369,7 +372,11 @@ export default function CaraCard({
         )}
 
         {/* Status badge */}
-        <div className={`mx-2 mb-2 rounded-lg border py-1 text-center text-[9px] font-mono font-bold uppercase tracking-widest ${state.badge} ${
+        <div className={`mx-2 mb-2 rounded-lg border py-1 text-center text-[9px] font-mono font-bold uppercase tracking-widest ${
+          isRecentlyProgrammed && !(isDispensing || isAnyUnpaid || isAnyEot || isAnyReady || isAnyPrepaid || dispenser.isBlocked)
+            ? 'bg-sky-500/10 border-sky-500/30 text-sky-400'
+            : state.badge
+        } ${
           isDispensing || isAnyUnpaid || isAnyEot || isAnyReady ? 'animate-pulse' : ''
         }`}>
           {dispenser.isBlocked  ? '⛔ BLOQUEADA' :
@@ -378,6 +385,9 @@ export default function CaraCard({
            isAnyUnpaid          ? '💳 COBRO PENDIENTE' :
            isAnyReady           ? '🖐 MANGUERA LEVANTADA' :
            isAnyPrepaid         ? '✓ AUTORIZADA' :
+           // Enviado al PTS-2, todavía sin confirmación por su WS (se apaga
+           // sola a los 8s o en cuanto isAnyPrepaid pase a true, lo que pase primero).
+           isRecentlyProgrammed ? '📋 PROGRAMADA' :
            isAnyOffline         ? '📡 SIN SEÑAL' :
            totalPending > 0     ? `💳 ${totalPending} PEND.` :
                                   '○ EN REPOSO'}

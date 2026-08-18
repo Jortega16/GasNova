@@ -550,6 +550,44 @@ export const api = {
     return apiFetch("configuration/prices-scheduler");
   },
 
+  async getRemoteServerConfiguration(): Promise<BackendApiResponse> {
+    return apiFetch("configuration/remote-server");
+  },
+
+  /** Cada cuánto el PTS-2 empuja Volume/Amount en vivo por WebSocket (1-3600s). */
+  async setLiveRefreshRate(
+    websocketsPeriodSeconds: number,
+    httpPeriodSeconds?: number,
+  ): Promise<BackendApiResponse> {
+    return apiFetch("configuration/remote-server/refresh-rate", {
+      method: "PUT",
+      body: JSON.stringify({
+        websockets_period_seconds: websocketsPeriodSeconds,
+        ...(httpPeriodSeconds !== undefined ? { http_period_seconds: httpPeriodSeconds } : {}),
+      }),
+    });
+  },
+
+  /** A dónde/cómo se conecta el PTS-2 por WebSocket para el push en vivo (venta/estado). */
+  async setRemoteServerConnection(params: {
+    ipAddress?: string;
+    domainName?: string;
+    websocketsPort: number;
+    websocketsUri?: string;
+    useWebsocketsCommunication?: boolean;
+  }): Promise<BackendApiResponse> {
+    return apiFetch("configuration/remote-server/connection", {
+      method: "PUT",
+      body: JSON.stringify({
+        ip_address: params.ipAddress || undefined,
+        domain_name: params.domainName || undefined,
+        websockets_port: params.websocketsPort,
+        websockets_uri: params.websocketsUri || "ptsWebSocket",
+        use_websockets_communication: params.useWebsocketsCommunication ?? true,
+      }),
+    });
+  },
+
   async setPricesSchedulerConfiguration(
     schedules: {
       id: number;

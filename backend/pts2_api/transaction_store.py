@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .models import PendingTransaction, PumpTransaction, Shift
@@ -175,7 +176,20 @@ def upsert_pending_transaction(
         pos_terminal_code=pos_terminal_code,
     )
     db.add(pending)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Carrera con otra request concurrente (dos pestañas/clientes disparando
+        # capture para la misma trx_id casi al mismo tiempo): el SELECT de arriba
+        # no la vio porque el otro commit todavía no había pasado, y ambos
+        # intentaron insertar. Quien pierde la carrera no debe explotar con 500 —
+        # simplemente recupera la fila que sí quedó insertada y la trata como
+        # "ya existía" (created=False), igual que el caso `existing` de arriba.
+        db.rollback()
+        existing = db.query(PendingTransaction).filter(PendingTransaction.trx_id == trx_id).first()
+        if existing:
+            return existing, False
+        raise
     db.refresh(pending)
     return pending, True
 

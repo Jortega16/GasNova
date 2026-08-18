@@ -80,11 +80,43 @@ def _resolve_fuel_type(trx: dict[str, Any]) -> str:
     return "Regular Unleaded"
 
 
-def _default_date_range() -> tuple[str, str]:
-    """Últimas 48 h en UTC (ISO sin microsegundos)."""
-    end = datetime.now(timezone.utc).replace(microsecond=0)
+_PTS_DT_FMT = "%Y-%m-%dT%H:%M:%S"
+
+
+def _fmt_pts_datetime(value: datetime) -> str:
+    """Formatea exactamente como pide jsonPTS §188: 'YYYY-MM-DDThh:mm:ss', 19
+    caracteres, sin sufijo de zona horaria. `datetime.isoformat()` sobre un
+    datetime con tzinfo (p.ej. UTC) agrega '+00:00', que el PTS-2 no espera —
+    eso rompe el parseo del rango en el controlador (JSONPTS_ERROR_TIME_OUT_OF_RANGE,
+    código 48)."""
+    return value.strftime(_PTS_DT_FMT)
+
+
+def _controller_now(client) -> datetime | None:
+    """Hora local vigente en el propio PTS-2 (GetDateTime), no la del backend.
+
+    El controlador reporta su hora en su propia zona local (ver 'UTCOffset' en
+    /health) — puede diferir varias horas de la UTC del servidor. Si se manda
+    un rango calculado en UTC del backend, "ahora" puede quedar en el futuro
+    respecto al reloj del controlador y disparar el mismo error de rango.
+    Devuelve None si no se pudo consultar (se usa un fallback en ese caso).
+    """
+    try:
+        data = client.get_datetime()
+        raw = data.get("DateTime") if isinstance(data, dict) else None
+        if not raw:
+            return None
+        return datetime.strptime(str(raw)[:19], _PTS_DT_FMT)
+    except Exception:
+        return None
+
+
+def _default_date_range(client=None) -> tuple[str, str]:
+    """Últimas 48 h, en la hora del propio PTS-2 si se puede consultar
+    (evita desalineación de zona horaria), o UTC del backend como respaldo."""
+    end = (client and _controller_now(client)) or datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
     start = end - timedelta(hours=48)
-    return start.isoformat(), end.isoformat()
+    return _fmt_pts_datetime(start), _fmt_pts_datetime(end)
 
 
 # ─── GET /sync/status ────────────────────────────────────────────────────────
@@ -154,7 +186,7 @@ def sync_pump_transactions(
     client=Depends(get_pts2_client),
 ) -> CommandResponse:
     if not date_time_start or not date_time_end:
-        default_start, default_end = _default_date_range()
+        default_start, default_end = _default_date_range(client)
         date_time_start = date_time_start or default_start
         date_time_end = date_time_end or default_end
 

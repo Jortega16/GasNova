@@ -200,6 +200,13 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
     if packet_type == "UploadPumpTransaction":
         logger.info("Venta recibida: %s", data)
         record_pump_event()
+        # Solo true si upsert_pending_transaction() realmente insertó/actualizó
+        # la fila — controla la razón que se manda por notify_changed() para
+        # que el frontend no dispare un refetch de "pendientes" en vano cuando
+        # este paquete se descartó (sin despacho real, venta cero, etc.): el
+        # push de /live/state (bombas/tanques) sigue saliendo siempre, solo se
+        # evita la llamada extra a GET /pumps/pending-transactions.
+        pending_saved = False
         try:
             pump_id_val: int = data.get("Pump", 1)
             transaction = data.get("Transaction") or data.get("TransactionId") or data.get("Id")
@@ -296,6 +303,7 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
                             pos_terminal_code=str(data.get("Terminal") or data.get("PosTerminalCode") or "") or None,
                             shift_id=auth_shift_id,
                         )
+                        pending_saved = True
                     except ValueError as exc:
                         if str(exc) != "zero_sale_rejected":
                             raise
@@ -312,7 +320,10 @@ async def handle_packet(packet: dict[str, Any], websocket: WebSocket, db: Sessio
         except (TypeError, ValueError):
             trx_number = None
         _auto_close_transaction(websocket, pump_id_val, transaction=trx_number)
-        await live_broadcaster.notify_changed("UploadPumpTransaction", pump_id_val)
+        await live_broadcaster.notify_changed(
+            "UploadPumpTransaction" if pending_saved else "UploadPumpTransactionSkipped",
+            pump_id_val,
+        )
         await websocket.send_text(json.dumps(confirmation(packet_id, packet_type)))
         return
 

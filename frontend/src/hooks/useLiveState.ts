@@ -50,6 +50,7 @@ function liveStateWsUrl(): string {
 export function useLiveState(
   pumpCount: number,
   enabled: boolean,
+  onEvent?: (reason: string, pumpId: number | null) => void,
 ): LiveState {
   const [state, setState] = useState<LiveState>({ pumps: null, tanks: null });
   const [wsConnected, setWsConnected] = useState(false);
@@ -63,6 +64,9 @@ export function useLiveState(
 
   const fetchNowRef = useRef(fetchNow);
   fetchNowRef.current = fetchNow;
+
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent;
 
   // Polling: cadencia rápida sin WS, latido lento de respaldo con WS activo.
   useVisibilityPolling(
@@ -88,7 +92,20 @@ export function useLiveState(
         setWsConnected(true);
         fetchNowRef.current();
       };
-      ws.onmessage = () => {
+      ws.onmessage = (event) => {
+        // Flag inmediato: además de refrescar /live/state (bombas/tanques),
+        // avisa YA con la razón del push (p.ej. "UploadPumpTransaction" — la
+        // venta ya quedó guardada en pending_transactions) para que quien
+        // escuche pueda actuar en el mismo tick, sin esperar a que cambie la
+        // referencia de `pumps`/`tanks` y dispare un efecto derivado después.
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg?.type === "live_state_changed") {
+            onEventRef.current?.(msg.reason ?? "unknown", msg.pump ?? null);
+          }
+        } catch {
+          // Mensaje no-JSON o inesperado: no bloquea el refresco normal.
+        }
         fetchNowRef.current();
       };
       ws.onerror = () => {

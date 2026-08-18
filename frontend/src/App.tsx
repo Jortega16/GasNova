@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import Header from './components/Header';
 import Footer from './components/Footer';
 import CaraCard from './components/CaraCard';
@@ -296,6 +296,9 @@ export default function App() {
   const PTS_AUTH_MAX_ATTEMPTS = 5;
   /** Auth local pendiente: solo se envía al PTS cuando la manguera está levantada. */
   const pendingPtsAuthRef = useRef<Map<number, PendingPtsAuth>>(new Map());
+  /** Caras con un preset/prepago recién enviado al PTS-2 (badge "📋 PROGRAMADA"
+   * temporal, se limpia sola a los 8s o en cuanto el PTS-2 confirma "Prepaid"). */
+  const [recentlyProgrammed, setRecentlyProgrammed] = useState<Set<number>>(new Set());
   const ptsAuthInFlightRef = useRef<Set<number>>(new Set());
   /** Auth ya programada (evita autoFree entre delete pending y sendPtsAuthorize). */
   const ptsAuthScheduledRef = useRef<Set<number>>(new Set());
@@ -324,16 +327,28 @@ export default function App() {
     return !!(d && Array.isArray(d.nozzles) && d.nozzles.length > 0);
   };
 
-  const sendPtsAuthorize = async (pumpId: number, auth: PendingPtsAuth): Promise<boolean> => {
+  /**
+   * 'ok'      — el PTS-2 confirmó la autorización.
+   * 'failed'  — se intentó de verdad (llegó a llamar la API) y falló.
+   * 'skipped' — nunca se intentó (mapeo no cargado, nozzle inválido, ya hay
+   *             uno en vuelo, o todavía en cooldown de un intento anterior).
+   *
+   * Distinguir 'failed' de 'skipped' importa: los llamadores cuentan
+   * reintentos fallidos contra un límite (PTS_AUTH_MAX_ATTEMPTS) — si un
+   * bloqueo por cooldown/in-flight contara igual que un fallo real, el
+   * límite se agotaría con intentos que ni siquiera tocaron la red, dejando
+   * la manguera "detectada como levantada" pero sin autorizar nunca de verdad.
+   */
+  const sendPtsAuthorize = async (pumpId: number, auth: PendingPtsAuth): Promise<'ok' | 'failed' | 'skipped'> => {
     if (!pumpConfigLoadedRef.current || !hasPumpMapping(pumpId)) {
       console.warn(`[auth] Bloqueado: mapeo no cargado para cara ${pumpId}`);
-      return false;
+      return 'skipped';
     }
     if (auth.nozzle < 1) {
       console.warn(`[auth] Bloqueado: nozzle inválido para cara ${pumpId}`);
-      return false;
+      return 'skipped';
     }
-    if (ptsAuthInFlightRef.current.has(pumpId) || isAuthCoolingDown(pumpId)) return false;
+    if (ptsAuthInFlightRef.current.has(pumpId) || isAuthCoolingDown(pumpId)) return 'skipped';
     ptsAuthInFlightRef.current.add(pumpId);
     try {
       if (auth.mode === 'full' || auth.mode === 'free') {
@@ -341,16 +356,16 @@ export default function App() {
         if (res.ok) {
           pendingPtsAuthRef.current.delete(pumpId);
           armAuthCooldown(pumpId);
-        } else {
-          // Sin esto, autoFree (autoservicio) reintenta en cada tick de
-          // polling sin ningún freno si el PTS-2 sigue rechazando/timeouteando
-          // — no depende de pendingPtsAuthRef como el flujo con preset, así
-          // que nada más lo frena. Cooldown más largo que en éxito para no
-          // bombardear un controlador que ya está fallando.
-          console.warn(`[auth] postpay-authorize falló para cara ${pumpId}: ${res.error}`);
-          armAuthCooldown(pumpId, 10000);
+          return 'ok';
         }
-        return !!res.ok;
+        // Sin esto, autoFree (autoservicio) reintenta en cada tick de
+        // polling sin ningún freno si el PTS-2 sigue rechazando/timeouteando
+        // — no depende de pendingPtsAuthRef como el flujo con preset, así
+        // que nada más lo frena. Cooldown más largo que en éxito para no
+        // bombardear un controlador que ya está fallando.
+        console.warn(`[auth] postpay-authorize falló para cara ${pumpId}: ${res.error}`);
+        armAuthCooldown(pumpId, 10000);
+        return 'failed';
       }
       const fuelPrice = prices.find(p => p.fuelType === auth.fuelType)?.price;
       const res = await api.authorizePump(
@@ -364,14 +379,14 @@ export default function App() {
       if (res.ok) {
         pendingPtsAuthRef.current.delete(pumpId);
         armAuthCooldown(pumpId);
-      } else {
-        // Mismo freno para el flujo con preset: aunque este SÍ tiene límite de
-        // reintentos vía pendingPtsAuthRef (ver más abajo), sin cooldown cada
-        // intento fallido se dispara en el siguiente tick de polling casi
-        // inmediatamente.
-        armAuthCooldown(pumpId, 10000);
+        return 'ok';
       }
-      return !!res.ok;
+      // Mismo freno para el flujo con preset: aunque este SÍ tiene límite de
+      // reintentos vía pendingPtsAuthRef (ver más abajo), sin cooldown cada
+      // intento fallido se dispara en el siguiente tick de polling casi
+      // inmediatamente.
+      armAuthCooldown(pumpId, 10000);
+      return 'failed';
     } finally {
       setTimeout(() => ptsAuthInFlightRef.current.delete(pumpId), 2500);
     }
@@ -426,9 +441,39 @@ export default function App() {
     // Evita que el poll de live-state dispare un segundo authorize en paralelo
     ptsAuthScheduledRef.current.add(pumpId);
     pendingPtsAuthRef.current.delete(pumpId);
-    void sendPtsAuthorize(pumpId, auth).then((ok) => {
+    void sendPtsAuthorize(pumpId, auth).then((result) => {
       ptsAuthScheduledRef.current.delete(pumpId);
-      if (!ok) {
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (result === 'ok') {
+        // Badge temporal "📋 PROGRAMADA" en la tarjeta de la cara: visible de
+        // inmediato, se apaga sola a los 8s (para entonces ya debería haber
+        // llegado la confirmación real del PTS-2 y cambiar a "✓ AUTORIZADA").
+        setRecentlyProgrammed(prev => new Set(prev).add(pumpId));
+        setTimeout(() => {
+          setRecentlyProgrammed(prev => {
+            if (!prev.has(pumpId)) return prev;
+            const next = new Set(prev);
+            next.delete(pumpId);
+            return next;
+          });
+        }, 8000);
+        // Rastro auditable de "esto sí se mandó al PTS-2" — independiente del
+        // badge "✓ AUTORIZADA" (que solo aparece cuando el PTS-2 ya confirmó
+        // el estado por su propio WebSocket). Esto queda apenas se envía.
+        const modeLabel = auth.mode === 'full' ? 'Full (sin límite)'
+          : auth.mode === 'free' ? 'Autoservicio'
+          : `Preset ${auth.limitType === 'Volume' ? auth.dose + ' Gal' : '$' + auth.dose}`;
+        setAlerts(prev => [{
+          id: `AL-PROG-${Math.random()}`,
+          dateTime: `Hoy ${timeStr}`,
+          pumpName: `Cara ${pumpId}`,
+          volume: '—',
+          amount: auth.dose ? `$${auth.dose}` : '—',
+          paymentType: 'System',
+          message: `📋 Venta programada enviada a Cara ${pumpId} (${auth.fuelType}, ${modeLabel}).`,
+          isCustomNote: true,
+        }, ...prev]);
+      } else {
         pendingPtsAuthRef.current.set(pumpId, auth);
       }
     });
@@ -613,7 +658,19 @@ export default function App() {
   // ─── PTS-2 Real-time pump status polling (every 2 seconds) ───────────────────
   // El sondeo en sí vive en useLiveState (un solo GET /live/state); este efecto
   // solo reacciona cuando llega un snapshot nuevo y traduce jsonPTS → estado UI.
-  const liveState = useLiveState(dispensers.length > 0 ? dispensers.length : 4, !isSimulating);
+  const liveState = useLiveState(
+    dispensers.length > 0 ? dispensers.length : 4,
+    !isSimulating,
+    // Flag inmediato: en cuanto el backend confirma por WS que guardó una
+    // venta (UploadPumpTransaction), refresca pendientes YA — no espera al
+    // round-trip de /live/state ni al efecto derivado de más abajo.
+    useCallback((reason: string) => {
+      if (reason === 'UploadPumpTransaction') {
+        refreshPendingFromDb();
+      }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
+  );
 
   useEffect(() => {
     if (isSimulating || !liveState.pumps) return;
@@ -732,8 +789,14 @@ export default function App() {
             pendingPtsAuthRef.current.delete(pumpIdToAuth);
             setTimeout(() => {
               ptsAuthScheduledRef.current.delete(pumpIdToAuth);
-              void sendPtsAuthorize(pumpIdToAuth, auth).then((ok) => {
-                if (!ok && pendingMatches) {
+              void sendPtsAuthorize(pumpIdToAuth, auth).then((result) => {
+                if (result === 'skipped' && pendingMatches) {
+                  // Nunca se intentó de verdad (cooldown, in-flight, mapeo
+                  // aún cargando) — no cuenta como intento fallido: se
+                  // reencola tal cual para el próximo tick, sin gastar
+                  // presupuesto del límite de reintentos de abajo.
+                  pendingPtsAuthRef.current.set(pumpIdToAuth, auth);
+                } else if (result === 'failed' && pendingMatches) {
                   const attempts = (auth.attempts || 0) + 1;
                   if (attempts >= PTS_AUTH_MAX_ATTEMPTS) {
                     // No llegó al PTS-2 tras varios intentos (controlador
@@ -1514,8 +1577,8 @@ export default function App() {
         fuelType,
         mode: 'full',
         shiftId: shiftDetails.shiftId,
-      }).then((ok) => {
-        if (ok) api.startDispensing(dispenserId);
+      }).then((result) => {
+        if (result === 'ok') api.startDispensing(dispenserId);
       });
     }
 
@@ -2752,23 +2815,41 @@ export default function App() {
 
   // Load users, active shift, and scheduled prices from backend on mount
   useEffect(() => {
+    let cancelled = false;
+
     // Fetch pumps configuration (mapeo persistido en BD), luego pendientes
     // en un solo setState para no perder la cola al reemplazar caras.
-    api.getPumpsConfiguration().then(async res => {
-      let nextDispensers: DispenserState[] | null = null;
+    //
+    // Con reintentos: si esta llamada golpea un 401 transitorio (carrera
+    // entre este efecto de montaje y el login terminando de guardar el
+    // token), `pumpConfigLoaded` se quedaba en `false` para el resto de la
+    // sesión — sin reintento nunca vuelve a intentarse, y sendPtsAuthorize
+    // bloquea en silencio TODA autorización futura (nada llega al PTS-2, la
+    // venta nunca se guarda en pendientes, sin ningún aviso al operador).
+    const loadPumpsConfig = async (attempt = 0): Promise<void> => {
+      const res = await api.getPumpsConfiguration();
+      if (cancelled) return;
       if (res.ok && Array.isArray(res.data) && res.data.length > 0) {
-        nextDispensers = (res.data as any[]).map(mapPumpConfigToDispenser);
+        const nextDispensers = (res.data as any[]).map(mapPumpConfigToDispenser);
         setPumpConfigLoaded(true);
-      }
-      const pRes = await api.getPendingTransactions();
-      const pending = (pRes.ok && Array.isArray(pRes.data)) ? (pRes.data as any[]) : [];
-      if (nextDispensers) {
+        const pRes = await api.getPendingTransactions();
+        if (cancelled) return;
+        const pending = (pRes.ok && Array.isArray(pRes.data)) ? (pRes.data as any[]) : [];
         setDispensers(mergePendingIntoDispensers(nextDispensers, pending));
-      } else if (pending.length > 0) {
-        applyPendingFromDb(pending);
+        return;
       }
-    }).catch(() => {
-      reloadPendingAfterConfig();
+      if (attempt < 5) {
+        setTimeout(() => { if (!cancelled) loadPumpsConfig(attempt + 1); }, 2000 * (attempt + 1));
+        return;
+      }
+      console.error(`[mount] No se pudo cargar la configuración de caras tras ${attempt + 1} intentos (${res.error || 'sin datos'}).`);
+      const pRes = await api.getPendingTransactions();
+      if (!cancelled && pRes.ok && Array.isArray(pRes.data) && pRes.data.length > 0) {
+        applyPendingFromDb(pRes.data as any[]);
+      }
+    };
+    loadPumpsConfig().catch(() => {
+      if (!cancelled) reloadPendingAfterConfig();
     });
 
     // Fetch tanks configuration
@@ -2849,6 +2930,8 @@ export default function App() {
         setScheduledPrices(mapped);
       }
     });
+
+    return () => { cancelled = true; };
   }, []);
 
   // User Management callbacks
@@ -3717,6 +3800,7 @@ export default function App() {
                   <CaraCard
                     key={dispenser.id}
                     dispenser={dispenser}
+                    isRecentlyProgrammed={recentlyProgrammed.has(dispenser.id)}
                     unitMeasure={unitMeasure}
                     currencySymbol={currencySymbol}
                     onPreAuthorize={handlePreAuthorizeClick}

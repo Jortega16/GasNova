@@ -110,7 +110,7 @@ export default function OtherTabs({
   const [tpvLocation, setTpvLocation] = useState(getStationLocation());
   const [apiEndpoint, setApiEndpoint] = useState('https://api.gasnova.site/v1');
   const [apiToken, setApiToken] = useState('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9');
-  const [wsEndpoint, setWsEndpoint] = useState('wss://stream.gasnova.com/events');
+  const [wsChannelStatus, setWsChannelStatus] = useState<'unknown' | 'ok' | 'error'>('unknown');
   const [pts2Host, setPts2Host] = useState('192.168.50.117');
   const [pts2AuthType, setPts2AuthType] = useState('basic');
   const [pts2Username, setPts2Username] = useState('admin');
@@ -123,6 +123,14 @@ export default function OtherTabs({
   const [autoConsolidateSaving, setAutoConsolidateSaving] = useState(false);
   const [isTestingApi, setIsTestingApi] = useState(false);
   const [isTestingWs, setIsTestingWs] = useState(false);
+  const [liveRefreshSeconds, setLiveRefreshSeconds] = useState('2');
+  const [liveRefreshSaving, setLiveRefreshSaving] = useState(false);
+  const [liveRefreshResult, setLiveRefreshResult] = useState<'ok' | 'error' | null>(null);
+
+  const [remoteServerIp, setRemoteServerIp] = useState('');
+  const [remoteServerPort, setRemoteServerPort] = useState('8083');
+  const [remoteConnSaving, setRemoteConnSaving] = useState(false);
+  const [remoteConnResult, setRemoteConnResult] = useState<'ok' | 'error' | null>(null);
 
   const [newCardHolder, setNewCardHolder] = useState('');
   const [newCardLimit, setNewCardLimit] = useState('');
@@ -211,6 +219,19 @@ export default function OtherTabs({
   const [pShowTax,        setPShowTax]        = useState(false);
   const [pTaxRate,        setPTaxRate]        = useState(0);
   const [pCurrencySymbol, setPCurrencySymbol] = useState('$');
+
+  const checkWsChannelStatus = () => {
+    api.getRemoteServerConfiguration().then(res => {
+      const data = res.data as any;
+      const ok = !!(res.ok && data?.IsWebsocketsCommunicationSuccessful && data?.IsConnectionSuccessful);
+      setWsChannelStatus(ok ? 'ok' : 'error');
+    }).catch(() => setWsChannelStatus('error'));
+  };
+
+  useEffect(() => {
+    // Estado real del canal WS del PTS-2 (GetRemoteServerConfiguration), no simulado.
+    checkWsChannelStatus();
+  }, []);
 
   useEffect(() => {
     // Load printer config from backend
@@ -2041,16 +2062,6 @@ export default function OtherTabs({
 
                 <div className="space-y-2">
                   <div>
-                    <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">DIRECCIÓN DE WEBSOCKET (WSS)</label>
-                    <input
-                      type="text"
-                      value={wsEndpoint}
-                      onChange={(e) => setWsEndpoint(e.target.value)}
-                      placeholder="wss://stream.gasnova.com/events"
-                      className="w-full bg-white border border-neutral-300 rounded px-2.5 py-1.5 text-xs text-slate-800 font-mono focus:outline-none focus:border-[#355e9e]"
-                    />
-                  </div>
-                  <div>
                     <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">IP DEL CONTROLADOR PTS-2</label>
                     <input
                       type="text"
@@ -2100,10 +2111,27 @@ export default function OtherTabs({
                   </div>
                   <div>
                     <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-1">ESTADO DE CANAL DE EVENTOS</label>
-                    <div className="flex items-center gap-1.5 py-1 px-2.5 rounded bg-emerald-50 border border-emerald-200 w-fit">
-                      <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
-                      <span className="text-[10.5px] font-bold text-emerald-700 uppercase font-mono">ESCUCHANDO EN VIVO ✓</span>
-                    </div>
+                    {wsChannelStatus === 'ok' && (
+                      <div className="flex items-center gap-1.5 py-1 px-2.5 rounded bg-emerald-50 border border-emerald-200 w-fit">
+                        <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
+                        <span className="text-[10.5px] font-bold text-emerald-700 uppercase font-mono">ESCUCHANDO EN VIVO ✓</span>
+                      </div>
+                    )}
+                    {wsChannelStatus === 'error' && (
+                      <div className="flex items-center gap-1.5 py-1 px-2.5 rounded bg-red-50 border border-red-200 w-fit">
+                        <span className="w-2 h-2 rounded-full bg-red-600" />
+                        <span className="text-[10.5px] font-bold text-red-700 uppercase font-mono">SIN CONEXIÓN ✗</span>
+                      </div>
+                    )}
+                    {wsChannelStatus === 'unknown' && (
+                      <div className="flex items-center gap-1.5 py-1 px-2.5 rounded bg-slate-100 border border-slate-200 w-fit">
+                        <span className="w-2 h-2 rounded-full bg-slate-400" />
+                        <span className="text-[10.5px] font-bold text-slate-500 uppercase font-mono">Verificando...</span>
+                      </div>
+                    )}
+                    <p className="text-[9px] text-slate-400 mt-1">
+                      Real: lee 'IsWebsocketsCommunicationSuccessful'/'IsConnectionSuccessful' directo del PTS-2 (GetRemoteServerConfiguration).
+                    </p>
                   </div>
                 </div>
 
@@ -2112,15 +2140,148 @@ export default function OtherTabs({
                     type="button"
                     onClick={() => {
                       setIsTestingWs(true);
-                      setTimeout(() => {
+                      setWsChannelStatus('unknown');
+                      api.getRemoteServerConfiguration().then(res => {
+                        const data = res.data as any;
+                        const ok = !!(res.ok && data?.IsWebsocketsCommunicationSuccessful && data?.IsConnectionSuccessful);
+                        setWsChannelStatus(ok ? 'ok' : 'error');
                         setIsTestingWs(false);
-                        alert(`Suscripción simulada enviada correctamente a ${wsEndpoint} - Conexión establecida.`);
-                      }, 700);
+                        if (!ok) {
+                          alert('El PTS-2 no reporta conexión WebSocket activa (IsWebsocketsCommunicationSuccessful/IsConnectionSuccessful en false). Revisa IP/dominio y puerto en "Destino del WebSocket saliente del PTS-2" abajo.');
+                        }
+                      }).catch(() => {
+                        setWsChannelStatus('error');
+                        setIsTestingWs(false);
+                      });
                     }}
                     className="w-full text-center bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-[10px] py-1.5 rounded cursor-pointer transition-colors border border-neutral-300"
                   >
-                    {isTestingWs ? "Verificando Canal..." : "Probar Suscripción WS"}
+                    {isTestingWs ? "Verificando Canal..." : "Verificar Estado Real"}
                   </button>
+                </div>
+
+                <div className="border-t border-slate-200/60 pt-2.5 space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">
+                    Frecuencia de refresco en vivo (monto/litraje durante un despacho)
+                  </label>
+                  <p className="text-[9px] text-slate-400">
+                    'WebsocketsUploadStatusRequestsPeriodSeconds' del PTS-2 — cada cuánto empuja el volumen/monto en vivo por WebSocket. Más bajo = pantalla más rápida al colgar o durante el despacho, pero más tráfico al controlador.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      max={3600}
+                      value={liveRefreshSeconds}
+                      onChange={(e) => { setLiveRefreshSeconds(e.target.value); setLiveRefreshResult(null); }}
+                      className="w-20 bg-white border border-neutral-300 rounded px-2 py-1.5 text-xs text-slate-800 font-mono focus:outline-none focus:border-[#355e9e]"
+                    />
+                    <span className="text-[10px] text-slate-400">segundos (1–3600)</span>
+                    <button
+                      type="button"
+                      disabled={liveRefreshSaving}
+                      onClick={async () => {
+                        const val = parseInt(liveRefreshSeconds, 10);
+                        if (isNaN(val) || val < 1 || val > 3600) {
+                          alert('Ingrese un valor entre 1 y 3600 segundos.');
+                          return;
+                        }
+                        setLiveRefreshSaving(true);
+                        setLiveRefreshResult(null);
+                        try {
+                          const res = await api.setLiveRefreshRate(val);
+                          setLiveRefreshResult(res.ok ? 'ok' : 'error');
+                        } catch {
+                          setLiveRefreshResult('error');
+                        } finally {
+                          setLiveRefreshSaving(false);
+                        }
+                      }}
+                      className="bg-[#1b365d] hover:bg-[#2a4f8f] disabled:opacity-60 text-white font-bold text-[10px] py-1.5 px-3 rounded cursor-pointer transition-colors"
+                    >
+                      {liveRefreshSaving ? 'Aplicando...' : 'Aplicar al PTS-2'}
+                    </button>
+                    {liveRefreshResult === 'ok' && (
+                      <span className="text-emerald-700 text-[10px] font-bold flex items-center gap-1"><Check className="w-3 h-3" /> Aplicado</span>
+                    )}
+                    {liveRefreshResult === 'error' && (
+                      <span className="text-red-600 text-[10px] font-bold">Sin respuesta del PTS-2</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-200/60 pt-2.5 space-y-1.5">
+                  <label className="text-[10px] font-bold text-amber-600 block uppercase tracking-wider">
+                    ⚠️ Esta NO es la IP del PTS-2 — es la IP de ESTE servidor
+                  </label>
+                  <p className="text-[9px] text-slate-400">
+                    A diferencia de "IP DEL CONTROLADOR PTS-2" de arriba (adonde el backend llama), aquí va la
+                    IP/dominio y puerto de este servidor GasNova, a los que el PTS-2 debe conectarse por
+                    WebSocket para el push en vivo ('IpAddress'/'DomainName'/'WebsocketsPort'). Sin esto
+                    configurado el sistema queda funcionando solo con polling (hasta 10s de retraso) en vez
+                    de refresco instantáneo. Convención: 8082 para la API, 8083 dedicado para este WebSocket
+                    (evita compartir puerto con la API) — usar ese puerto publicado por Docker en el servidor.
+                  </p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <input
+                      type="text"
+                      placeholder="IP del servidor (ej. 192.168.50.45)"
+                      value={remoteServerIp}
+                      onChange={(e) => { setRemoteServerIp(e.target.value); setRemoteConnResult(null); }}
+                      className="w-44 bg-white border border-neutral-300 rounded px-2 py-1.5 text-xs text-slate-800 font-mono focus:outline-none focus:border-[#355e9e]"
+                    />
+                    <span className="text-[10px] text-slate-400">:</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      placeholder="puerto"
+                      value={remoteServerPort}
+                      onChange={(e) => { setRemoteServerPort(e.target.value); setRemoteConnResult(null); }}
+                      className="w-20 bg-white border border-neutral-300 rounded px-2 py-1.5 text-xs text-slate-800 font-mono focus:outline-none focus:border-[#355e9e]"
+                    />
+                    <button
+                      type="button"
+                      disabled={remoteConnSaving}
+                      onClick={async () => {
+                        const port = parseInt(remoteServerPort, 10);
+                        if (!remoteServerIp.trim()) {
+                          alert('Ingrese la IP o dominio del servidor.');
+                          return;
+                        }
+                        if (isNaN(port) || port < 1 || port > 65535) {
+                          alert('Ingrese un puerto válido (1-65535).');
+                          return;
+                        }
+                        setRemoteConnSaving(true);
+                        setRemoteConnResult(null);
+                        try {
+                          const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(remoteServerIp.trim());
+                          const res = await api.setRemoteServerConnection({
+                            ipAddress: isIp ? remoteServerIp.trim() : undefined,
+                            domainName: isIp ? undefined : remoteServerIp.trim(),
+                            websocketsPort: port,
+                          });
+                          const ok = !!(res.ok && (res.data as any)?.is_websockets_communication_successful);
+                          setRemoteConnResult(ok ? 'ok' : 'error');
+                          setWsChannelStatus(ok ? 'ok' : 'error');
+                        } catch {
+                          setRemoteConnResult('error');
+                        } finally {
+                          setRemoteConnSaving(false);
+                        }
+                      }}
+                      className="bg-[#1b365d] hover:bg-[#2a4f8f] disabled:opacity-60 text-white font-bold text-[10px] py-1.5 px-3 rounded cursor-pointer transition-colors"
+                    >
+                      {remoteConnSaving ? 'Aplicando...' : 'Aplicar al PTS-2'}
+                    </button>
+                    {remoteConnResult === 'ok' && (
+                      <span className="text-emerald-700 text-[10px] font-bold flex items-center gap-1"><Check className="w-3 h-3" /> Conectado</span>
+                    )}
+                    {remoteConnResult === 'error' && (
+                      <span className="text-red-600 text-[10px] font-bold">No conectó — revisar IP/puerto/firewall</span>
+                    )}
+                  </div>
                 </div>
               </div>
 
